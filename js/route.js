@@ -214,11 +214,11 @@ function evaluateStepWind(step, latlngs) {
     let diff = Math.abs(routeHeading - windDir) % 360;
     if (diff > 180) diff = 360 - diff;
 
-    let type = "cote";
+    let type = "kant";
     if (diff < 45) {
-        type = "face";
+        type = "tegenwind";
     } else if (diff > 135) {
-        type = "dos";
+        type = "rug";
     }
 
     return { type, speed };
@@ -255,26 +255,26 @@ function updateWindText(currentView, activeScore) {
     const nScore = parseFloat(window.currentNormalScore) || 0;
     const aScore = parseFloat(window.currentAltScore) || 0;
 
-    let line1 = isAlternativeView ? "Route alternative" : "Route normale";
-    let line2 = `Distance : ${distanceKm} km`;
+    let line1 = isAlternativeView ? "Alternatieve route" : "Normale route";
+    let line2 = `Afstand : ${distanceKm} km`;
     let line3 = "";
 
     if (!allData.features || allData.features.length <= 1) {
-        line3 = "Aucune alternative disponible";
+        line3 = "Er is geen alternatief beschikbaar";
     } else {
         const diffPercent = nScore > 0 ? Math.round(((aScore - nScore) / nScore) * 100) : 0;
         const absDiff = Math.min(Math.abs(diffPercent), 90);
 
         if (Math.abs(diffPercent) < 5) {
-            line3 = "Vent similaire sur les 2 trajets";
+            line3 = "Op beide trajecten vergelijkbare wind";
         } else if (diffPercent < 0) {
             line3 = isAlternativeView
-                ? `Environ ${absDiff}% d'effort en moins`
-                : `L'alternative économise ${absDiff}%`;
+                ? `Ongeveer ${absDiff}% minder moeite`
+                : `Het alternatief bespaart ${absDiff}%`;
         } else {
             line3 = isAlternativeView
-                ? `Environ ${absDiff}% d'effort en plus`
-                : `La route normale est plus abritée`;
+                ? `Ongeveer ${absDiff}% extra moeite`
+                : `De gewone route is meer beschut`;
         }
     }
 
@@ -292,12 +292,12 @@ function updateWindText(currentView, activeScore) {
 // Calcul trajet principal
 async function getRoute() {
     if (!window.userPosition) {
-        alert("Définissez votre position d'abord");
+        alert("Bepaal eerst je positie");
         return;
     }
     
     if (!window.destination) {
-        alert("Choisissez une destination dans la liste");
+        alert("Kies een bestemming uit de lijst");
         return;
     }
     
@@ -312,7 +312,7 @@ async function getRoute() {
     const allRoutesData = await getAlternativeRoute(start, endLat, endLon);
     
     if (!allRoutesData.features || allRoutesData.features.length === 0) {
-        alert("Aucun itinéraire trouvé");
+        alert("Er is geen route gevonden");
         return;
     }
 
@@ -381,7 +381,7 @@ async function getRoute() {
         if (allRoutesData.features.length > 1) {
             toggleBtn.style.display = "block";
             let showingAlternative = false;
-            toggleBtn.innerText = "Voir la route alternative";
+            toggleBtn.innerText = "Bekijk de alternatieve route";
 
             toggleBtn.onclick = function() {
                 window.routeGroup.clearLayers();
@@ -391,7 +391,7 @@ async function getRoute() {
 
                 if (!showingAlternative) {
                     drawWindRoute(window.latlngsAlternativePersist);
-                    toggleBtn.innerText = "Voir la route normale";
+                    toggleBtn.innerText = "De normale route bekijken";
                     updateWindText("alternative", alternativeScore);
                     window.routeSteps = window.altSteps;
 
@@ -404,7 +404,7 @@ async function getRoute() {
                     showingAlternative = true;
                 } else {
                     drawWindRoute(window.latlngsNormalPersist);
-                    toggleBtn.innerText = "Voir la route alternative";
+                    toggleBtn.innerText = "Bekijk de alternatieve route";
                     updateWindText("normale", normalScore);
                     window.routeSteps = window.normSteps;
 
@@ -435,18 +435,18 @@ function startNavigation() {
     }
 
     if (!window.userPosition) {
-        alert("Position GPS non détectée. Impossible de démarrer.");
+        alert("GPS-positie niet gedetecteerd. Kan niet starten.");
         return;
     }
 
     if (!window.routeSteps || window.routeSteps.length === 0) {
-        alert("Aucun itinéraire prêt pour la navigation.");
+        alert("Er is geen route beschikbaar om te bekijken.");
         return;
     }
 
     if (!window.isNavigating) {
         window.isNavigating = true;
-        btn.innerText = "Arrêter";
+        btn.innerText = "Stoppen";
         btn.style.backgroundColor = "#e74c3c";
 
         Promise.resolve(requestWakeLock()).catch(err => {
@@ -465,7 +465,7 @@ function startNavigation() {
         }
         // Salutation immédiate, puis annonce enchaînée : première instruction -> info vent
         if (typeof speakInstruction === "function") {
-            speakInstruction("Navigation démarrée. Bonne route !").then(() => {
+            speakInstruction("Navigatie gestart. Goede reis!").then(() => {
                 const firstStep = (window.routeSteps && window.routeSteps[0]) ? window.routeSteps[0] : null;
                 if (firstStep && firstStep.instruction) {
                     //Empêche checkVoiceNavigation (gps.js)au premier point GPS reçu après le démarrage
@@ -474,11 +474,11 @@ function startNavigation() {
                     speakInstruction(firstStep.instruction).then(() => {
                         if (firstStep.windInfo) {
                             const wi = firstStep.windInfo;
-                            const windMsg = wi.type === "face"
-                                ? `Vent de face à ${wi.speed} kilomètres heure.`
-                                : wi.type === "dos"
-                                    ? "Vent dans le dos."
-                                    : "Attention, vent de côté.";
+                            const windMsg = wi.type === "tegenwind"
+                                ? `Tegenwind uit ${wi.speed} kilometer per uur.`
+                                : wi.type === "rug"
+                                    ? "Rugwind."
+                                    : "Let op, zijwind.";
                             speakInstruction(windMsg);
                         }
                     });
@@ -505,7 +505,7 @@ function startNavigation() {
     } else {
         // STOP navigation
         window.isNavigating = false;
-        btn.innerText = "Démarrer";
+        btn.innerText = "Start";
         btn.style.backgroundColor = "#2ecc71";
 
         releaseWakeLock();
@@ -577,7 +577,7 @@ async function recalculateRouteFromDeviation(lat, lon) {
         }
 
         if (!allRoutesData.features || allRoutesData.features.length === 0) {
-            console.warn("[Route] Recalcul automatique : aucun itinéraire trouvé.");
+            console.warn("[Route] Automatische herberekening: er is geen route gevonden.");
             return;
         }
 
@@ -666,7 +666,7 @@ async function recalculateRouteFromDeviation(lat, lon) {
         }
 
         if (typeof speakInstruction === "function") {
-            speakInstruction("Nouvel itinéraire calculé.");
+            speakInstruction("Nieuwe route berekend.");
         }
 
     } catch (err) {
