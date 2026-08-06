@@ -141,7 +141,7 @@ function getBestDutchVoice() {
 function translateInstruction(text) {
     if (!text) return "";
     return text
-        replace(/turn left/gi, "sla linksaf")
+        .replace(/turn left/gi, "sla linksaf")
         .replace(/turn right/gi, "sla rechtsaf")
         .replace(/make a slight left/gi, "houd licht links")
         .replace(/make a slight right/gi, "houd licht rechts")
@@ -178,7 +178,7 @@ function processTtsQueue() {
         const utterance = new SpeechSynthesisUtterance(cleanedText);
         const voice = getBestDutchVoice();
         if (voice) utterance.voice = voice;
-        //utterance.lang = "fr-NL";
+        //utterance.lang = "nl-NL";
         utterance.rate = 0.95;
 
         utterance.onend = () => {
