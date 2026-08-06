@@ -125,13 +125,13 @@ function shouldUpdate() {
 // ==============================
 // VOIX HORS-LIGNE (LOCAL SERVICE)
 // ==============================
-function getBestFrenchVoice() {
+function getBestDutchVoice() {
     if (!("speechSynthesis" in window)) return null;
     const voices = speechSynthesis.getVoices();
     if (!voices || voices.length === 0) return null;
 
-    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
-           voices.find(v => v.lang.startsWith("fr")) ||
+    return voices.find(v => v.lang.startsWith("nl") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("nl")) ||
            null;
 }
 
@@ -180,9 +180,9 @@ function processTtsQueue() {
         }
 
         const utterance = new SpeechSynthesisUtterance(cleanedText);
-        const voice = getBestFrenchVoice();
+        const voice = getBestDutchVoice();
         if (voice) utterance.voice = voice;
-        utterance.lang = "fr-FR";
+        utterance.lang = "nl-NL";
         utterance.rate = 0.95;
 
         utterance.onend = () => {
