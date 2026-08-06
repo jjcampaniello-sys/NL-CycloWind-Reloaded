@@ -486,7 +486,7 @@ function startNavigation() {
                     // si pas d'étape, on peut annoncer le vent global si disponible
                     const globalWindSpd = window.currentWindSpeed || 0;
                     if (globalWindSpd) {
-                        speakInstruction(`Vent ${globalWindSpd} kilomètres heure.`);
+                        speakInstruction(`Wind ${globalWindSpd} kilometer per uur.`);
                     }
                 }
             });
