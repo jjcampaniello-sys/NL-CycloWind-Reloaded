@@ -1,0 +1,372 @@
+// ==========================================
+// CycloWind - gps.js (OPTIMISÉ & SANS LATENCE)
+// ==========================================
+
+let currentStepIndex = 0;
+let lastSpokenStepIndex = -1;
+let lastHeading = 0;
+let hasInitialCentering = false;
+let wakeLock = null;
+
+// Anti-spam GPS (300ms min entre 2 calculs)
+let lastUpdateTime = 0;
+
+// ==============================
+// WAKE LOCK
+// ==============================
+async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+        } catch (err) {}
+    }
+}
+
+function releaseWakeLock() {
+    if (wakeLock !== null) {
+        wakeLock.release();
+        wakeLock = null;
+    }
+}
+
+document.addEventListener('visibilitychange', async () => {
+    if (wakeLock !== null && document.visibilityState === 'visible') {
+        await requestWakeLock();
+    }
+});
+
+function shouldUpdate() {
+    const now = Date.now();
+    if (now - lastUpdateTime < 300) return false;
+    lastUpdateTime = now;
+    return true;
+}
+
+// ==============================
+// VOIX HORS-LIGNE (LOCAL SERVICE)
+// ==============================
+function getBestFrenchVoice() {
+    if (!('speechSynthesis' in window)) return null;
+    const voices = speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+
+    // Priorité absolue aux voix embarquées sur l'appareil (hors-ligne)
+    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("fr")) ||
+           null;
+}
+/**
+ * Traduction des instructions
+ */
+function translateInstruction(text) {
+    if (!text) return "";
+    return text
+        .replace(/turn left/gi, "tournez à gauche")
+        .replace(/turn right/gi, "tournez à droite")
+        .replace(/make a slight left/gi, "serrez légèrement à gauche")
+        .replace(/make a slight right/gi, "serrez légèrement à droite")
+        .replace(/keep left/gi, "restez sur la gauche")
+        .replace(/keep right/gi, "restez sur la droite")
+        .replace(/head/gi, "prenez la direction")
+        .replace(/onto/gi, "sur")
+        .replace(/continue/gi, "continuez");
+}
+function speakInstruction(text) {
+    if (!('speechSynthesis' in window) || !text) return;
+
+    speechSynthesis.cancel(); // Stoppe l'instruction précédente
+    //======================================================================================
+    // 1. Traduction puis nettoyage du texte (sans double déclaration)
+    let translated = translateInstruction(text);
+    let cleanedText = translated
+        .replace(/\bRte\b/gi, "Route")
+        .replace(/\bAv\.\b|\bAv\b/gi, "Avenue")
+        .replace(/\bBd\.\b|\bBd\b/gi, "Boulevard")
+        .replace(/\bD(\d+)/gi, "Départementale $1")
+        .replace(/['"’`_]/g, " ")
+        .replace(/[^a-zA-Z0-9àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ\s,.!?]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+//=================================================================================================
+    if (!cleanedText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanedText);
+    const voice = getBestFrenchVoice();
+
+    if (voice) utterance.voice = voice;
+
+    utterance.lang = "fr-FR";
+    utterance.rate = 0.95;
+
+    speechSynthesis.speak(utterance);
+}
+
+// ==============================
+// GEOMETRIE
+// ==============================
+function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(dLat/2)**2 +
+        Math.cos(lat1*Math.PI/180) *
+        Math.cos(lat2*Math.PI/180) *
+        Math.sin(dLon/2)**2;
+
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+}
+
+function calculateHeading(lat1, lon1, lat2, lon2) {
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI/180);
+    const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) -
+              Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLon);
+
+    return ((Math.atan2(y, x) * 180/Math.PI) + 360) % 360;
+}
+
+// Lissage de la rotation de la flèche sans saut à 360°
+function smoothRotation(target) {
+    const diff = ((target - lastHeading + 540) % 360) - 180;
+    lastHeading = (lastHeading + diff * 0.25 + 360) % 360;
+    return lastHeading;
+}
+
+// ==============================
+// SNAP TO ROUTE
+// ==============================
+function snapToRoute(lat, lon, route, maxDist = 15) {
+    if (!route || route.length < 2) return { point: [lat, lon], routeAngle: null };
+
+    let closest = [lat, lon];
+    let minDist = Infinity;
+    let bestSegmentAngle = null;
+
+    for (let i = 0; i < route.length - 1; i++) {
+        const p1 = route[i];
+        const p2 = route[i + 1];
+
+        const dx = p2[0] - p1[0];
+        const dy = p2[1] - p1[1];
+
+        const t = Math.max(0, Math.min(1,
+            ((lat - p1[0]) * dx + (lon - p1[1]) * dy) / (dx*dx + dy*dy || 1)
+        ));
+
+        const proj = [p1[0] + t*dx, p1[1] + t*dy];
+        const dist = getDistanceInMeters(lat, lon, proj[0], proj[1]);
+
+        if (dist < minDist) {
+            minDist = dist;
+            closest = proj;
+            bestSegmentAngle = calculateHeading(p1[0], p1[1], p2[0], p2[1]);
+        }
+    }
+
+    return minDist < maxDist 
+        ? { point: closest, routeAngle: bestSegmentAngle } 
+        : { point: [lat, lon], routeAngle: null };
+}
+
+// ==============================
+// FLÈCHE SANS CSS TRANSITION LENTE
+// ==============================
+function createFluidArrowIcon() {
+    const svgHtml = `
+        <div id="user-arrow-container" style="width: 32px; height: 32px; transform-origin: center;">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+                <circle cx="12" cy="12" r="10" fill="#2980b9" opacity="0.25"/>
+                <path d="M12 2 L18 20 L12 16 L6 20 Z" fill="#27ae60" stroke="#ffffff" stroke-width="2"/>
+            </svg>
+        </div>
+    `;
+    return L.divIcon({
+        html: svgHtml,
+        className: 'fluid-arrow-icon',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+    });
+}
+
+function updateArrowRotation(angle) {
+    const el = document.getElementById("user-arrow-container");
+    if (el) el.style.transform = `rotate(${angle}deg)`;
+}
+// ==============================
+// DÉTECTION ÉLOIGNEMENT DE PARCOURS
+// ==============================
+let lastOffRouteSpokenTime = 0; // Pour éviter de répéter l'alerte en boucle
+
+function checkOffRoute(lat, lon) {
+    // 1. On vérifie qu'on navigue et qu'un tracé est chargé
+    if (!window.isNavigating || !window.latlngsNormalPersist || window.latlngsNormalPersist.length < 2) return;
+
+    // 2. On projetter la position actuelle sur la ligne du tracé global
+    // latlngsNormalPersist (ou l'ensemble des coordonnées du tracé)
+    const activeGeometry = window.latlngsNormalPersist;
+    const snap = snapToRoute(lat, lon, activeGeometry, 200);
+
+    // 3. Distance REELLE entre le cycliste et la route la plus proche
+    const distFromTrack = getDistanceInMeters(lat, lon, snap.point[0], snap.point[1]);
+
+    const now = Date.now();
+
+    // 4. Seuil : si le cycliste est à plus de 70 mètres de la ligne du parcours
+    if (distFromTrack > 70 && (now - lastOffRouteSpokenTime > 45000)) {
+        if (!speechSynthesis.speaking) {
+            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à recalculer l'itinéraire.");
+            lastOffRouteSpokenTime = now;
+        }
+    } else if (distFromTrack <= 70) {
+        // Dès que le cycliste revient sur la route, on autorise à nouveau l'alerte si besoin plus tard
+        lastOffRouteSpokenTime = 0; 
+    }
+}
+
+
+// ==============================
+// NAVIGATION VOCALE DYNAMIQUE
+// ==============================
+function checkVoiceNavigation(lat, lon) {
+    if (!window.routeSteps || currentStepIndex >= window.routeSteps.length) return;
+
+    const step = window.routeSteps[currentStepIndex];
+    if (!step || !step.location) return;
+
+    const dist = getDistanceInMeters(lat, lon, step.location[1], step.location[0]);
+
+    // Adapté pour la marche (< 8 km/h) jusqu'au vélo rapide (> 25 km/h)
+    let triggerRadius = 15; // Seuil pour la marche / basse vitesse
+    if (window.currentSpeedKmh) {
+        if (window.currentSpeedKmh > 25) triggerRadius = 90;
+        else if (window.currentSpeedKmh > 12) triggerRadius = 60;
+    }
+
+    if (dist < triggerRadius && currentStepIndex !== lastSpokenStepIndex) {
+        //==========================================
+                if (step.instruction) {
+            let msg = step.instruction;
+            
+            if (step.windInfo) {
+                if (step.windInfo.type === "face") {
+                    msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
+                } else if (step.windInfo.type === "dos") {
+                    msg += `. Vent dans le dos.`;
+                } else if (step.windInfo.type === "cote") {
+                    msg += `. Attention, vent de côté.`;
+                }
+            }
+            // On déclenche l'instruction
+            speakInstruction(msg);
+        }
+//===================================================================
+        
+       // speakInstruction(step.instruction);
+        
+        lastSpokenStepIndex = currentStepIndex;
+        currentStepIndex++;
+    }
+}
+
+// ==============================
+// GESTION GPS PRINCIPALE
+// ==============================
+function onLocationUpdate(rawLat, rawLon, headingGps = null, speed = null) {
+    if (!shouldUpdate()) return;
+
+    if (speed !== null && speed >= 0) {
+        window.currentSpeedKmh = speed * 3.6;
+    }
+
+    const prevLat = window.userPosition ? window.userPosition[0] : rawLat;
+    const prevLon = window.userPosition ? window.userPosition[1] : rawLon;
+    const movedDistance = getDistanceInMeters(prevLat, prevLon, rawLat, rawLon);
+
+    window.userPosition = [rawLat, rawLon];
+
+    // Alignement sur parcours
+    const activeRoute = (window.routeSteps === window.altSteps) 
+        ? window.latlngsAlternativePersist 
+        : window.latlngsNormalPersist;
+
+    let displayLat = rawLat;
+    let displayLon = rawLon;
+    let routeAngle = null;
+
+    if (activeRoute && activeRoute.length > 0) {
+        const snap = snapToRoute(rawLat, rawLon, activeRoute, 25);
+        displayLat = snap.point[0];
+        displayLon = snap.point[1];
+        routeAngle = snap.routeAngle;
+    }
+
+    // Gestion du CAP à l'arrêt vs en mouvement
+    let targetHeading = lastHeading;
+    if (movedDistance > 1.2) { // En mouvement : mise à jour
+        if (headingGps !== null && !isNaN(headingGps) && headingGps !== 0) {
+            targetHeading = headingGps;
+        } else if (routeAngle !== null) {
+            targetHeading = routeAngle;
+        } else {
+            targetHeading = calculateHeading(prevLat, prevLon, displayLat, displayLon);
+        }
+    }
+    // Si à l'arrêt (< 1.2m), targetHeading garde la dernière valeur : AUCUNE oscillation !
+
+    const smoothedCap = smoothRotation(targetHeading);
+
+    // Mettre à jour la carte et la flèche
+    if (!window.userMarker && window.map) {
+        window.userMarker = L.marker([displayLat, displayLon], { icon: createFluidArrowIcon() }).addTo(window.map);
+    } else if (window.userMarker) {
+        window.userMarker.setLatLng([displayLat, displayLon]);
+    }
+
+    updateArrowRotation(smoothedCap);
+
+    if (!hasInitialCentering && window.map) {
+        window.map.setView([displayLat, displayLon], 16);
+        hasInitialCentering = true;
+    }
+
+    // ⚡ SUIVI INSTANTANÉ SANS GLISSEMENT VISUEL (animate: false)
+    if (window.isNavigating && window.map && movedDistance > 0.8) {
+        window.map.panTo([displayLat, displayLon], { animate: false });
+        checkVoiceNavigation(displayLat, displayLon);
+
+       // 2. Vérification de l'éloignement / déviation
+        checkOffRoute(displayLat, displayLon);   
+    }
+}
+
+// ==============================
+// INITIALISATION GPS
+// ==============================
+function initGeolocation() {
+    if (!navigator.geolocation) return;
+
+    navigator.geolocation.watchPosition(
+        pos => {
+            onLocationUpdate(
+                pos.coords.latitude,
+                pos.coords.longitude,
+                pos.coords.heading,
+                pos.coords.speed
+            );
+        },
+        err => console.warn(err),
+        {
+            enableHighAccuracy: true,
+            maximumAge: 1000,
+            timeout: 10000
+        }
+    );
+}
+
+document.addEventListener("DOMContentLoaded", initGeolocation);
+
+// Exports
+window.requestWakeLock = requestWakeLock;
+window.releaseWakeLock = releaseWakeLock;
+window.onLocationUpdate = onLocationUpdate;

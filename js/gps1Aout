@@ -1,0 +1,461 @@
+// ==========================================
+// CycloWind - gps.js (OPTIMISÉ & SANS LATENCE)
+// ==========================================
+
+let currentStepIndex = 0;
+let lastSpokenStepIndex = -1;
+let lastHeading = 0;
+let hasInitialCentering = false;
+let wakeLock = null;
+
+// Anti-spam GPS (300ms min entre 2 calculs)
+let lastUpdateTime = 0;
+
+// ==============================
+// WAKE LOCK
+// ==============================
+async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+        } catch (err) {}
+    }
+}
+
+function releaseWakeLock() {
+    if (wakeLock !== null) {
+        wakeLock.release();
+        wakeLock = null;
+    }
+}
+
+document.addEventListener('visibilitychange', async () => {
+    if (wakeLock !== null && document.visibilityState === 'visible') {
+        await requestWakeLock();
+    }
+});
+
+function shouldUpdate() {
+    const now = Date.now();
+    if (now - lastUpdateTime < 300) return false;
+    lastUpdateTime = now;
+    return true;
+}
+
+// ==============================
+// VOIX HORS-LIGNE (LOCAL SERVICE)
+// ==============================
+function getBestFrenchVoice() {
+    if (!('speechSynthesis' in window)) return null;
+    const voices = speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+
+    // Priorité absolue aux voix embarquées sur l'appareil (hors-ligne)
+    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("fr")) ||
+           null;
+}
+/**
+ * Traduction des instructions
+ */
+function translateInstruction(text) {
+    if (!text) return "";
+    return text
+        .replace(/turn left/gi, "tournez à gauche")
+        .replace(/turn right/gi, "tournez à droite")
+        .replace(/make a slight left/gi, "serrez légèrement à gauche")
+        .replace(/make a slight right/gi, "serrez légèrement à droite")
+        .replace(/keep left/gi, "restez sur la gauche")
+        .replace(/keep right/gi, "restez sur la droite")
+        .replace(/head/gi, "prenez la direction")
+        .replace(/onto/gi, "sur")
+        .replace(/continue/gi, "continuez");
+}
+function speakInstruction(text) {
+    if (!('speechSynthesis' in window) || !text) return;
+
+    speechSynthesis.cancel(); // Stoppe l'instruction précédente
+    //======================================================================================
+    // 1. Traduction puis nettoyage du texte (sans double déclaration)
+    let translated = translateInstruction(text);
+    let cleanedText = translated
+        .replace(/\bRte\b/gi, "Route")
+        .replace(/\bAv\.\b|\bAv\b/gi, "Avenue")
+        .replace(/\bBd\.\b|\bBd\b/gi, "Boulevard")
+        .replace(/\bD(\d+)/gi, "Départementale $1")
+        .replace(/['"’`_]/g, " ")
+        .replace(/[^a-zA-Z0-9àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ\s,.!?]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+//=================================================================================================
+    if (!cleanedText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanedText);
+    const voice = getBestFrenchVoice();
+
+    if (voice) utterance.voice = voice;
+
+    utterance.lang = "fr-FR";
+    utterance.rate = 0.95;
+
+    speechSynthesis.speak(utterance);
+}
+
+// ==============================
+// GEOMETRIE
+// ==============================
+function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(dLat/2)**2 +
+        Math.cos(lat1*Math.PI/180) *
+        Math.cos(lat2*Math.PI/180) *
+        Math.sin(dLon/2)**2;
+
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+}
+
+function calculateHeading(lat1, lon1, lat2, lon2) {
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI/180);
+    const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) -
+              Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLon);
+
+    return ((Math.atan2(y, x) * 180/Math.PI) + 360) % 360;
+}
+
+// Lissage de la rotation de la flèche sans saut à 360°
+function smoothRotation(target) {
+    const diff = ((target - lastHeading + 540) % 360) - 180;
+    lastHeading = (lastHeading + diff * 0.25 + 360) % 360;
+    return lastHeading;
+}
+
+// ==============================
+// 1. LA FONCTION SNAPTOROUTE CORRIGÉE
+function snapToRoute(lat, lon, route, maxDist = 15) {
+    if (!route || route.length < 2) return { point: [lat, lon], routeAngle: null, distance: Infinity };
+
+    let closest = [lat, lon];
+    let minDist = Infinity;
+    let bestSegmentAngle = null;
+
+    // 🟢 EMPLACEMENT 1 : Remplacement du calcul de degré global
+    // On sépare le calcul pour la latitude et la longitude (ajustée à votre position sur Terre)
+    const latThreshold = maxDist / 111000; 
+    const lonThreshold = latThreshold / Math.cos(lat * Math.PI / 180);
+
+    for (let i = 0; i < route.length - 1; i++) {
+        const p1 = route[i];
+        const p2 = route[i + 1];
+
+        // 🟢 EMPLACEMENT 2 : Remplacement de votre Bounding Box originale
+        // On applique le bon seuil de latitude (latThreshold) et de longitude (lonThreshold)
+        const minLat = Math.min(p1[0], p2[0]) - latThreshold;
+        const maxLat = Math.max(p1[0], p2[0]) + latThreshold;
+        const minLon = Math.min(p1[1], p2[1]) - lonThreshold;
+        const maxLon = Math.max(p1[1], p2[1]) + lonThreshold;
+
+        // Si le point GPS est complètement en dehors de ce carré élargi, on zappe le segment
+        if (lat < minLat || lat > maxLat || lon < minLon || lon > maxLon) {
+            continue;
+        }
+
+        const dx = p2[0] - p1[0];
+        const dy = p2[1] - p1[1];
+
+        const t = Math.max(0, Math.min(1,
+            ((lat - p1[0]) * dx + (lon - p1[1]) * dy) / (dx * dx + dy * dy || 1)
+        ));
+
+        const proj = [p1[0] + t * dx, p1[1] + t * dy];
+        const dist = getDistanceInMeters(lat, lon, proj[0], proj[1]);
+
+        if (dist < minDist) {
+            minDist = dist;
+            closest = proj;
+            bestSegmentAngle = calculateHeading(p1[0], p1[1], p2[0], p2[1]);
+        }
+    }
+
+    // RENVOI DE VOTRE OBJET VALIDE
+    return { 
+        point: closest, 
+        routeAngle: bestSegmentAngle,
+        distance: minDist,
+        isSnapped: minDist <= maxDist
+    };
+}
+
+// ==============================
+// FLÈCHE SANS CSS TRANSITION LENTE
+// ==============================
+function createFluidArrowIcon() {
+    const svgHtml = `
+        <div id="user-arrow-container" style="width: 32px; height: 32px; transform-origin: center;">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+                <circle cx="12" cy="12" r="10" fill="#2980b9" opacity="0.25"/>
+                <path d="M12 2 L18 20 L12 16 L6 20 Z" fill="#27ae60" stroke="#ffffff" stroke-width="2"/>
+            </svg>
+        </div>
+    `;
+    return L.divIcon({
+        html: svgHtml,
+        className: 'fluid-arrow-icon',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+    });
+}
+
+function updateArrowRotation(angle) {
+    const el = document.getElementById("user-arrow-container");
+    if (el) el.style.transform = `rotate(${angle}deg)`;
+}
+
+// ==============================================================
+// DÉTECTION ÉLOIGNEMENT DE PARCOURS & RECALAGE (VERSION FINALE)
+// ==============================================================
+let lastOffRouteSpokenTime = 0; // Pour éviter de répéter l'alerte en boucle
+let wasOffRoute = false;        // Pour savoir si on vient de revenir sur le parcours
+
+function checkOffRoute(lat, lon) {
+    // 1. On vérifie qu'on navigue et qu'un tracé est chargé
+    if (!window.isNavigating || !window.latlngsNormalPersist || window.latlngsNormalPersist.length < 2) return;
+
+    const activeGeometry = window.latlngsNormalPersist;
+    
+    // 2. On projette la position sur la ligne (recherche large à 1000m)
+    const snap = snapToRoute(lat, lon, activeGeometry, 200);
+
+    // 3. Plus besoin de getDistanceInMeters ici ! On utilise la distance déjà calculée par snapToRoute
+    const distFromTrack = snap.distance;
+    const now = Date.now();
+
+    // 4. Seuil : si le cycliste est à plus de 70 mètres de la ligne du parcours
+    if (distFromTrack > 70 && (now - lastOffRouteSpokenTime > 45000)) {
+        if (!speechSynthesis.speaking) {
+            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à recalculer l'itinéraire.");
+            lastOffRouteSpokenTime = now;
+            wasOffRoute = true; // On enregistre qu'on est sorti de la route
+        }
+    } 
+    // 5. Dès que le cycliste revient sur la route (Moins ou égal à 70m)
+    else if (distFromTrack <= 70) {
+        lastOffRouteSpokenTime = 0; 
+
+        // 🔄 RECALAGE AUTOMATIQUE OPTIMISÉ DE L'ÉTAPE (Fenêtre glissante)
+        if (wasOffRoute && window.routeSteps && window.routeSteps.length > 0) {
+            let closestStepIndex = window.currentStepIndex;
+            let minDistance = Infinity;
+
+            // Fenêtre de recherche : 5 étapes en arrière et 20 étapes en avant maximum
+            const startIndex = Math.max(0, window.currentStepIndex - 5);
+            const endIndex = Math.min(window.routeSteps.length - 1, window.currentStepIndex + 20);
+
+            // On parcourt uniquement cette zone restreinte pour économiser la batterie
+            for (let i = startIndex; i <= endIndex; i++) {
+                const step = window.routeSteps[i];
+                if (step && step.location) {
+                    const d = getDistanceInMeters(lat, lon, step.location[1], step.location[0]);
+                    if (d < minDistance) {
+                        minDistance = d;
+                        closestStepIndex = i;
+                    }
+                }
+            }
+
+            // On met à jour l'index global sur l'étape retrouvée
+            window.currentStepIndex = closestStepIndex;
+            wasOffRoute = false; // Réinitialisation du drapeau
+            
+            console.log(`[Optimisé] Retour sur itinéraire. Étape recalée à l'index : ${window.currentStepIndex} (Fenêtre analysée : ${startIndex} à ${endIndex})`);
+        }
+    }
+}
+
+// ==============================
+// NAVIGATION VOCALE DYNAMIQUE PAR LE TEMPS AVEC SÉCURITÉ ENCHAÎNEMENT SERRÉ
+// ===================================================================
+function checkVoiceNavigation(lat, lon, gpsAccuracy = 5) {
+    if (!window.routeSteps || currentStepIndex >= window.routeSteps.length) return;
+
+    const step = window.routeSteps[currentStepIndex];
+    if (!step || !step.location) return;
+
+    // 1. Distance actuelle en mètres avant la prochaine intersection
+    const dist = getDistanceInMeters(lat, lon, step.location[1], step.location[0]);
+
+    // 2. Calcul du rayon temporel théorique (Augmenté à 14 secondes pour avoir le temps de lire)
+    const tempsAnticipationSecondes = 14; 
+    const vitesseKmh = window.currentSpeedKmh || 0;
+    const vitesseMs = vitesseKmh / 3.6;
+    
+    // Calcul de base basé sur la vitesse
+    let triggerRadius = vitesseMs * tempsAnticipationSecondes;
+
+    // 🛡️ SÉCURITÉ 1 : Limite maximale absolue en conditions normales
+    // Évite d'annoncer un virage à plus de 90m si on roule très vite, sauf si la rue est immense.
+    if (triggerRadius > 90) {
+        triggerRadius = 90;
+    }
+
+    // 3. 🛡️ SÉCURITÉ 2 : VIRAGES RAPPROCHÉS OU RUES COURTES
+    if (currentStepIndex > 0) {
+        const prevStep = window.routeSteps[currentStepIndex - 1];
+        if (prevStep && prevStep.location) {
+            const segmentLength = getDistanceInMeters(
+                prevStep.location[1], prevStep.location[0], 
+                step.location[1], step.location[0]
+            );
+
+            // Si la rue est plus courte que notre rayon d'avertissement, 
+            // on bride le rayon à 50% (le milieu) de cette petite rue.
+            // Cela garantit qu'on attend d'être bien engagé dedans avant d'annoncer le virage suivant.
+            if (triggerRadius > segmentLength) {
+                triggerRadius = segmentLength * 0.5;
+            }
+        }
+    }
+
+    // 4. Application des barrières minimales et de la précision GPS
+    // Augmentation du minimum à 15m (au lieu de 8m) pour éviter d'être au point de pivot à basse vitesse.
+    triggerRadius = Math.max(15, triggerRadius) + Math.min(15, gpsAccuracy);
+
+    // 5. Déclenchement de la consigne si on entre dans le cercle
+    if (dist < triggerRadius && currentStepIndex !== lastSpokenStepIndex) {
+        if (step.instruction) {
+            let msg = step.instruction;
+            
+            // Intégration des infos météo vent
+            if (step.windInfo) {
+                if (step.windInfo.type === "face") {
+                    msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
+                } else if (step.windInfo.type === "dos") {
+                    msg += `. Vent dans le dos.`;
+                } else if (step.windInfo.type === "cote") {
+                    msg += `. Attention, vent de côté.`;
+                }
+            }
+            speakInstruction(msg);
+        }
+        
+        lastSpokenStepIndex = currentStepIndex;
+        currentStepIndex++;
+    }
+}
+
+
+// ==============================
+// GESTION GPS PRINCIPALE
+// ==============================
+function onLocationUpdate(rawLat, rawLon, headingGps = null, speed = null, gpsAccuracy = 10) {
+    if (!shouldUpdate()) return;
+
+    // 1. Conversion et stockage de la vitesse
+    if (speed !== null && speed >= 0) {
+        window.currentSpeedKmh = speed * 3.6;
+    } else {
+        window.currentSpeedKmh = 0; // Sécurité si arrêté ou valeur invalide
+    }
+
+    const prevLat = window.userPosition ? window.userPosition[0] : rawLat;
+    const prevLon = window.userPosition ? window.userPosition[1] : rawLon;
+    const movedDistance = getDistanceInMeters(prevLat, prevLon, rawLat, rawLon);
+
+    window.userPosition = [rawLat, rawLon];
+
+    // Choix automatique de l'itinéraire actif
+    const activeRoute = (window.routeSteps === window.altSteps) 
+        ? window.latlngsAlternativePersist 
+        : window.latlngsNormalPersist;
+
+    let displayLat = rawLat;
+    let displayLon = rawLon;
+    let routeAngle = null;
+
+    if (activeRoute && activeRoute.length > 0) {
+        // ⚡ MODIFICATION 1 : SEUIL DYNAMIQUE
+        // On calcule un seuil intelligent basé sur la précision du GPS (gpsAccuracy).
+        // On le bloque entre 10 mètres minimum et 30 mètres maximum.
+        const dynamiqueSeuil = Math.max(10, Math.min(30, gpsAccuracy + 3));
+
+        const snap = snapToRoute(rawLat, rawLon, activeRoute, dynamiqueSeuil);
+        displayLat = snap.point[0];
+        displayLon = snap.point[1];
+        routeAngle = snap.routeAngle;
+    }
+
+    // Gestion du CAP à l'arrêt vs en mouvement
+    let targetHeading = lastHeading;
+    if (movedDistance > 1.2) { 
+        if (headingGps !== null && !isNaN(headingGps) && headingGps !== 0) {
+            targetHeading = headingGps;
+        } else if (routeAngle !== null) {
+            targetHeading = routeAngle;
+        } else {
+            targetHeading = calculateHeading(prevLat, prevLon, displayLat, displayLon);
+        }
+    }
+
+    const smoothedCap = smoothRotation(targetHeading);
+
+    // Mettre à jour la carte et la flèche
+    if (!window.userMarker && window.map) {
+        window.userMarker = L.marker([displayLat, displayLon], { icon: createFluidArrowIcon() }).addTo(window.map);
+    } else if (window.userMarker) {
+        window.userMarker.setLatLng([displayLat, displayLon]);
+    }
+
+    updateArrowRotation(smoothedCap);
+
+    if (!hasInitialCentering && window.map) {
+        window.map.setView([displayLat, displayLon], 16);
+        hasInitialCentering = true;
+    }
+
+    // Suivi de la caméra et déclenchement des modules annexes
+    if (window.isNavigating && window.map && movedDistance > 0.8) {
+        window.map.panTo([displayLat, displayLon], { animate: false });
+        
+        // Guidage vocal : On utilise la position recalée sur la route
+        checkVoiceNavigation(displayLat, displayLon);
+
+        // ⚡ MODIFICATION 2 : VÉRIFICATION ÉLOIGNEMENT
+        // IMPORTANT : On envoie la position BRUTE (rawLat, rawLon) pour pouvoir
+        // calculer l'écart réel si le cycliste/piéton quitte le tracé.
+        checkOffRoute(rawLat, rawLon);   
+    }
+}
+
+// ==============================
+// INITIALISATION GPS
+// ==============================
+function initGeolocation() {
+    if (!navigator.geolocation) return;
+
+    navigator.geolocation.watchPosition(
+        pos => {
+            onLocationUpdate(
+                pos.coords.latitude,
+                pos.coords.longitude,
+                pos.coords.heading,
+                pos.coords.speed
+            );
+        },
+        err => console.warn(err),
+        {
+            enableHighAccuracy: true,
+            maximumAge: 1000,
+            timeout: 10000
+        }
+    );
+}
+
+document.addEventListener("DOMContentLoaded", initGeolocation);
+
+// Exports
+window.requestWakeLock = requestWakeLock;
+window.releaseWakeLock = releaseWakeLock;
+window.onLocationUpdate = onLocationUpdate;

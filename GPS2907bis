@@ -1,0 +1,357 @@
+// ==========================================
+// CycloWind - gps.js
+// Flèche fluide & Voix Naturelle (Correction Anti-Saccades & Fix GPS)
+// ==========================================
+
+let currentStepIndex = 0;
+let lastSpokenStepIndex = -1;
+let lastHeading = 0;
+let hasInitialCentering = false; // Permet de savoir si le premier zoom a été fait
+
+// Variable globale pour le verrouillage d'écran
+let wakeLock = null;
+
+// Fonction pour maintenir l'écran allumé
+async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            console.log('Écran maintenu éveillé pour la navigation');
+        } catch (err) {
+            console.log(`Erreur Wake Lock: ${err.message}`);
+        }
+    }
+}
+
+// Fonction pour libérer l'écran (économiser la batterie à l'arrêt)
+function releaseWakeLock() {
+    if (wakeLock !== null) {
+        wakeLock.release();
+        wakeLock = null;
+        console.log('Verrouillage écran relâché');
+    }
+}
+
+// Réactivation automatique si l'utilisateur change d'application puis revient sur CycloWind
+document.addEventListener('visibilitychange', async () => {
+    if (wakeLock !== null && document.visibilityState === 'visible') {
+        await requestWakeLock();
+    }
+});
+
+/**
+ * Réinitialise la navigation vocale
+ */
+function resetVoiceNavigation() {
+    currentStepIndex = 0;
+    lastSpokenStepIndex = -1;
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+    }
+}
+
+/**
+ * Sélection de la voix française (PRIORITÉ AU LOCAL)
+ */
+function getBestFrenchVoice() {
+    if (!('speechSynthesis' in window)) return null;
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+
+    const localVoice = voices.find(v => v.lang.startsWith("fr") && v.localService === true);
+    if (localVoice) return localVoice;
+
+    return voices.find(v => v.lang === "fr-FR" || v.lang === "fr_FR") || 
+           voices.find(v => v.lang.startsWith("fr"));
+}
+
+if ('speechSynthesis' in window) {
+    window.speechSynthesis.onvoiceschanged = getBestFrenchVoice;
+}
+
+/**
+ * Traduction des instructions
+ */
+function translateInstruction(text) {
+    if (!text) return "";
+    return text
+        .replace(/turn left/gi, "tournez à gauche")
+        .replace(/turn right/gi, "tournez à droite")
+        .replace(/make a slight left/gi, "serrez légèrement à gauche")
+        .replace(/make a slight right/gi, "serrez légèrement à droite")
+        .replace(/keep left/gi, "restez sur la gauche")
+        .replace(/keep right/gi, "restez sur la droite")
+        .replace(/head/gi, "prenez la direction")
+        .replace(/onto/gi, "sur")
+        .replace(/continue/gi, "continuez");
+}
+
+/**
+ * 🔊 SYNTHÈSE VOCALE PURE ET NATURELLE
+ */
+function speakInstruction(text) {
+    if (!('speechSynthesis' in window) || !text) return;
+
+    if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+    }
+
+    // 1. Traduction puis nettoyage du texte (sans double déclaration)
+    let translated = translateInstruction(text);
+    let cleanedText = translated
+        .replace(/\bRte\b/gi, "Route")
+        .replace(/\bAv\.\b|\bAv\b/gi, "Avenue")
+        .replace(/\bBd\.\b|\bBd\b/gi, "Boulevard")
+        .replace(/\bD(\d+)/gi, "Départementale $1")
+        .replace(/['"’`_]/g, " ")
+        .replace(/[^a-zA-Z0-9àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ\s,.!?]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    if (!cleanedText) return;
+
+    // 2. Création de l'instance
+    const utterance = new SpeechSynthesisUtterance(cleanedText);
+    const voice = getBestFrenchVoice();
+    
+    if (voice) {
+        utterance.voice = voice;
+    }
+
+    utterance.lang = "fr-FR";
+    window.currentUtterance = utterance;
+
+    setTimeout(() => {
+        window.speechSynthesis.speak(utterance);
+    }, 50);
+}
+
+/**
+ * Mathématiques et Géométrie
+ */
+function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function calculateHeading(lat1, lon1, lat2, lon2) {
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+    const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+              Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+    return ((Math.atan2(y, x) * (180 / Math.PI)) + 360) % 360;
+}
+
+function getClosestPointOnSegment(p, a, b) {
+    const l2 = Math.pow(b[0] - a[0], 2) + Math.pow(b[1] - a[1], 2);
+    if (l2 === 0) return { point: a, segmentIndex: 0 };
+    let t = Math.max(0, Math.min(1, ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / l2));
+    return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+}
+
+/**
+ * 🧲 SNAP-TO-ROUTE STABLE
+ */
+function snapToRoute(userLat, userLon, routePoints, maxDistanceMeters = 25) {
+    if (!routePoints || routePoints.length < 2) return { point: [userLat, userLon], routeAngle: null };
+
+    let closestPoint = [userLat, userLon];
+    let minDistance = Infinity;
+    let activeSegmentIndex = 0;
+
+    for (let i = 0; i < routePoints.length - 1; i++) {
+        const projected = getClosestPointOnSegment([userLat, userLon], routePoints[i], routePoints[i + 1]);
+        const dist = getDistanceInMeters(userLat, userLon, projected[0], projected[1]);
+        if (dist < minDistance) {
+            minDistance = dist;
+            closestPoint = projected;
+            activeSegmentIndex = i;
+        }
+    }
+
+    if (minDistance <= maxDistanceMeters) {
+        const p1 = routePoints[activeSegmentIndex];
+        const p2 = routePoints[activeSegmentIndex + 1];
+        const routeAngle = calculateHeading(p1[0], p1[1], p2[0], p2[1]);
+        return { point: closestPoint, routeAngle: routeAngle };
+    }
+
+    return { point: [userLat, userLon], routeAngle: null };
+}
+
+/**
+ * 🎯 CRÉATION / ORIENTATION FLÈCHE
+ */
+function createFluidArrowIcon() {
+    const svgHtml = `
+        <div id="user-arrow-container" style="width: 32px; height: 32px;">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+                <circle cx="12" cy="12" r="10" fill="#2980b9" opacity="0.25"/>
+                <path d="M12 2 L18 20 L12 16 L6 20 Z" fill="#27ae60" stroke="#ffffff" stroke-width="2"/>
+            </svg>
+        </div>
+    `;
+    return L.divIcon({
+        html: svgHtml,
+        className: 'fluid-arrow-icon',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+    });
+}
+
+function updateArrowRotation(heading) {
+    const elem = document.getElementById("user-arrow-container");
+    if (elem) {
+        elem.style.transform = `rotate(${heading}deg)`;
+    }
+}
+
+/**
+ * SUIVI VOCAL DES ÉTAPES (Fix Déclenchement & Anti-Blocage)
+ */
+function checkVoiceNavigation(lat, lon) {
+    if (!window.routeSteps || window.routeSteps.length === 0) return;
+    if (currentStepIndex >= window.routeSteps.length) return;
+
+    const step = window.routeSteps[currentStepIndex];
+    let stepLat = null, stepLon = null;
+
+    if (step.way_points && step.way_points.length > 0) {
+        const pointIndex = step.way_points[0];
+        const activeRoutePoints = (window.routeSteps === window.altSteps) 
+            ? window.latlngsAlternativePersist 
+            : window.latlngsNormalPersist;
+
+        if (activeRoutePoints && activeRoutePoints[pointIndex]) {
+            stepLat = activeRoutePoints[pointIndex][0];
+            stepLon = activeRoutePoints[pointIndex][1];
+        }
+    } else {
+        stepLat = step.location ? step.location[1] : step.lat;
+        stepLon = step.location ? step.location[0] : step.lon;
+    }
+
+    if (!stepLat || !stepLon) return;
+
+    const distMeters = getDistanceInMeters(lat, lon, stepLat, stepLon);
+
+    // 🔊 Rayon étendu à 60 mètres pour anticiper les virages à vélo
+    if (distMeters <= 60 && currentStepIndex !== lastSpokenStepIndex) {
+        if (step.instruction) {
+            let msg = step.instruction;
+            
+            if (step.windInfo) {
+                if (step.windInfo.type === "face") {
+                    msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
+                } else if (step.windInfo.type === "dos") {
+                    msg += `. Vent dans le dos.`;
+                } else if (step.windInfo.type === "cote") {
+                    msg += `. Attention, vent de côté.`;
+                }
+            }
+            // On déclenche l'instruction
+            speakInstruction(msg);
+        }
+        lastSpokenStepIndex = currentStepIndex;
+        currentStepIndex++;
+    } 
+    // 🛡️ Anti-blocage : Si on a dépassé le point (éloignement > 70m alors qu'on l'avait manqué)
+    else if (distMeters > 70 && currentStepIndex === lastSpokenStepIndex + 1) {
+        // Si la distance augmente à nouveau sans avoir parlé, on passe à l'étape suivante pour ne pas bloquer tout le trajet
+        currentStepIndex++;
+    }
+}
+
+/**
+ * 📍 TRAITEMENT DES COORDONNÉES GPS
+ */
+function onLocationUpdate(rawLat, rawLon, headingFromGps = null) {
+    const prevLat = window.userPosition ? window.userPosition[0] : rawLat;
+    const prevLon = window.userPosition ? window.userPosition[1] : rawLon;
+
+    window.userPosition = [rawLat, rawLon];
+
+    let displayLat = rawLat;
+    let displayLon = rawLon;
+
+    const activeRoute = (window.routeSteps === window.altSteps) 
+        ? window.latlngsAlternativePersist 
+        : window.latlngsNormalPersist;
+
+    let routeAngle = null;
+
+    if (activeRoute && activeRoute.length > 0) {
+        const snapResult = snapToRoute(rawLat, rawLon, activeRoute, 25);
+        displayLat = snapResult.point[0];
+        displayLon = snapResult.point[1];
+        routeAngle = snapResult.routeAngle;
+    }
+
+    if (headingFromGps !== null && !isNaN(headingFromGps) && headingFromGps !== 0) {
+        lastHeading = headingFromGps;
+    } else if (getDistanceInMeters(prevLat, prevLon, displayLat, displayLon) > 2) {
+        lastHeading = calculateHeading(prevLat, prevLon, displayLat, displayLon);
+    } else if (routeAngle !== null) {
+        lastHeading = routeAngle; 
+    }
+
+    // POSITIONNEMENT DU MARQUEUR
+    if (window.userMarker) {
+        window.userMarker.setLatLng([displayLat, displayLon]);
+        updateArrowRotation(lastHeading);
+    } else if (window.map) {
+        window.userMarker = L.marker([displayLat, displayLon], {
+            icon: createFluidArrowIcon()
+        }).addTo(window.map);
+        updateArrowRotation(lastHeading);
+    }
+
+    // RECENTRAGE INITIAL AU CHARGEMENT
+    if (!hasInitialCentering && window.map) {
+        window.map.setView([displayLat, displayLon], 16, { animate: true });
+        hasInitialCentering = true;
+    }
+
+    // SUIVI DE CARTE PENDANT LA NAVIGATION
+    if (window.isNavigating && window.map) {
+        window.map.panTo([displayLat, displayLon], { animate: false });
+        checkVoiceNavigation(displayLat, displayLon);
+    }
+}
+
+/**
+ * DÉMARRAGE DU CAPTEUR GPS
+ */
+function initGeolocation() {
+    if ("geolocation" in navigator) {
+        navigator.geolocation.watchPosition(
+            (pos) => {
+                onLocationUpdate(
+                    pos.coords.latitude, 
+                    pos.coords.longitude, 
+                    pos.coords.heading || null
+                );
+            },
+            (err) => console.warn("GPS Warning:", err.message),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
+        );
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    initGeolocation();
+});
+
+// Exports globaux & Wake Lock
+window.requestWakeLock = requestWakeLock;
+window.releaseWakeLock = releaseWakeLock;
+window.speakInstruction = speakInstruction;
+window.checkVoiceNavigation = checkVoiceNavigation;
+window.resetVoiceNavigation = resetVoiceNavigation;
+window.onLocationUpdate = onLocationUpdate;
+window.getBestFrenchVoice = getBestFrenchVoice;
