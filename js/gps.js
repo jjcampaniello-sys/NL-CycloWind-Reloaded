@@ -125,13 +125,13 @@ function shouldUpdate() {
 // ==============================
 // VOIX HORS-LIGNE (LOCAL SERVICE)
 // ==============================
-function getBestFrenchVoice() {
+function getBestDutchVoice() {
     if (!("speechSynthesis" in window)) return null;
     const voices = speechSynthesis.getVoices();
     if (!voices || voices.length === 0) return null;
 
-    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
-           voices.find(v => v.lang.startsWith("fr")) ||
+    return voices.find(v => v.lang.startsWith("nl") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("nl")) ||
            null;
 }
 
@@ -141,15 +141,15 @@ function getBestFrenchVoice() {
 function translateInstruction(text) {
     if (!text) return "";
     return text
-        .replace(/turn left/gi, "tournez à gauche")
-        .replace(/turn right/gi, "tournez à droite")
-        .replace(/make a slight left/gi, "serrez légèrement à gauche")
-        .replace(/make a slight right/gi, "serrez légèrement à droite")
-        .replace(/keep left/gi, "restez sur la gauche")
-        .replace(/keep right/gi, "restez sur la droite")
-        .replace(/head/gi, "prenez la direction")
-        .replace(/onto/gi, "sur")
-        .replace(/continue/gi, "continuez");
+        replace(/turn left/gi, "sla linksaf")
+        .replace(/turn right/gi, "sla rechtsaf")
+        .replace(/make a slight left/gi, "houd licht links")
+        .replace(/make a slight right/gi, "houd licht rechts")
+        .replace(/keep left/gi, "houd links")
+        .replace(/keep right/gi, "houd rechts")
+        .replace(/head/gi, "ga richting")
+        .replace(/onto/gi, "naar")
+        .replace(/continue/gi, "ga verder");
 }
 
 // TTS queue processor: ensures sequential playback and returns a Promise
@@ -161,16 +161,12 @@ function processTtsQueue() {
 
     const item = ttsQueue.shift();
     try {
-        let translated = translateInstruction(item.text);
-        let cleanedText = translated
-            .replace(/\bRte\b/gi, "Route")
-            .replace(/\bAv\.\b|\bAv\b/gi, "Avenue")
-            .replace(/\bBd\.\b|\bBd\b/gi, "Boulevard")
-            .replace(/\bD(\d+)/gi, "Départementale $1")
-            .replace(/['"’`_]/g, " ")
-            .replace(/[^a-zA-Z0-9àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ\s,.!?]/g, "")
-            .replace(/\s+/g, " ")
-            .trim();
+        const translated = translateInstruction(text);
+    const cleanedText = translated
+        .replace(/['"’`_]/g, " ")
+        .replace(/[^a-zA-Z0-9àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ\s,.!?-]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
 
         if (!cleanedText) {
             item.resolve();
@@ -180,9 +176,9 @@ function processTtsQueue() {
         }
 
         const utterance = new SpeechSynthesisUtterance(cleanedText);
-        const voice = getBestFrenchVoice();
+        const voice = getBestDutchVoice();
         if (voice) utterance.voice = voice;
-        utterance.lang = "fr-FR";
+        //utterance.lang = "fr-NL";
         utterance.rate = 0.95;
 
         utterance.onend = () => {
@@ -403,7 +399,7 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
         offRouteHighCount = 0;
 
         if (!offRouteHasWarned && (now - lastOffRouteSpokenTime > offRouteCooldown)) {
-            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à rejoindre l'itinéraire.");
+            speakInstruction("U wijkt af van de route. Vergeet niet om te keren of weer op de route terug te keren.");
             lastOffRouteSpokenTime = now;
             offRouteHasWarned = true;
 
@@ -535,12 +531,12 @@ function checkVoiceNavigation(lat, lon, gpsAccuracy = 10) {
         let msg = step.instruction || "";
 
         if (step.windInfo) {
-            if (step.windInfo.type === "face") {
-                msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
-            } else if (step.windInfo.type === "dos") {
-                msg += ". Vent dans le dos.";
-            } else if (step.windInfo.type === "cote") {
-                msg += ". Attention, vent de côté.";
+            if (step.windInfo.type === "tegenwind") {
+                msg += `. Tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
+            } else if (step.windInfo.type === "rug") {
+                msg += ". De wind in de rug.";
+            } else if (step.windInfo.type === "kant") {
+                msg += ". Let op, zijwind.";
             }
         }
 
