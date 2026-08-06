@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>CycloWind Advanced</title>
+    <title>NL CycloWind Advanced</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
@@ -12,22 +12,22 @@
 
 <body>
 
-<h1>CycloWind Pro</h1>
+<h1>NL CycloWind Advanced</h1>
 <div class="top-bar">
     <button id="startNavBtn" onclick="startNavigation()" style="background-color: #2ecc71; color: white; padding: 10px; border: none; border-radius: 6px; cursor: pointer;">
-        Démarrer
+        Start
     </button>
     <button onclick="getRoute()">
-        Calculer trajet
+        Route berekenen
     </button>
-    <button onclick="clearRoute()">Supprimer trajet</button>
+    <button onclick="clearRoute()">Route verwijderen</button>
 
     <!-- Settings toggle -->
-    <button id="settingsToggleBtn" style="margin-left:8px;">Paramètres GPS</button>
+    <button id="settingsToggleBtn" style="margin-left:8px;">GPS-instellingen</button>
 </div>
   
 <div class="search-box">
-    <input id="destination" oninput="searchDestination()" placeholder="Entrer une destination">
+    <input id="destination" oninput="searchDestination()" placeholder="Een bestemming invoeren">
     <div id="suggestions" style="background:white; position:absolute; z-index:1000; width:90%; max-height:200px; overflow:auto; border:1px solid #ccc;"></div>
 </div>
 
@@ -66,8 +66,8 @@
     <br><br>
 
     <div style="display:flex; gap:8px;">
-        <button id="gpsSettingsSaveBtn" style="flex:1;">Enregistrer</button>
-        <button id="gpsSettingsResetBtn" style="flex:1;">Restaurer défauts</button>
+        <button id="gpsSettingsSaveBtn" style="flex:1;">Opslaan</button>
+        <button id="gpsSettingsResetBtn" style="flex:1;">Correcties uitvoeren</button>
     </div>
 
     <p style="font-size:12px; color:#666; margin-top:8px">Les paramètres sont sauvegardés localement et prennent effet immédiatement.</p>
@@ -77,7 +77,7 @@
 
 <!-- Bloc d'analyse du vent en bas à droite de la carte -->
 <div class="wind-container-left">
-    <button id="toggleRouteBtn">Voir la route alternative</button>
+    <button id="toggleRouteBtn">Bekijk de alternatieve route</button>
 </div>
 
 <div id="windInfo"></div>
