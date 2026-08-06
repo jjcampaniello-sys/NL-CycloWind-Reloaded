@@ -1,6 +1,6 @@
 // Analyse du vent
 function windDirectionText(deg) {
-    const directions = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"];
+    const directions = ["N", "NO", "O", "SO", "S", "SW", "W", "NW"];
     const index = Math.round(deg / 45) % 8;
     return directions[index];
 }
@@ -16,16 +16,16 @@ function windEffect(rideDirection, windDirection) {
     // Si la route et l'origine du vent ont la MÊME direction (angle ~ 0°),
     // le vent vient de DEVANT toi -> Vent de face.
     if (angle < 45) {
-        return "💨 Vent de face";
+        return "💨 Tegenwind";
     }
 
     // Si la route et l'origine du vent sont OPPOSÉES (angle ~ 180°),
     // le vent vient de DERRIÈRE toi -> Vent favorable (dos).
     if (angle > 135) {
-        return "🚴 Vent favorable";
+        return "🚴 Gunstige wind";
     }
 
-    return "↔️ Vent latéral";
+    return "↔️ Zijwind";
 }
 
 // Coût du vent pour le calcul de route
