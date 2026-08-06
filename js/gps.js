@@ -403,7 +403,7 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
         offRouteHighCount = 0;
 
         if (!offRouteHasWarned && (now - lastOffRouteSpokenTime > offRouteCooldown)) {
-            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à rejoindre l'itinéraire.");
+            speakInstruction("U wijkt af van de route. Vergeet niet om te keren of weer op de route terug te keren.");
             lastOffRouteSpokenTime = now;
             offRouteHasWarned = true;
 
@@ -535,12 +535,12 @@ function checkVoiceNavigation(lat, lon, gpsAccuracy = 10) {
         let msg = step.instruction || "";
 
         if (step.windInfo) {
-            if (step.windInfo.type === "face") {
-                msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
-            } else if (step.windInfo.type === "dos") {
-                msg += ". Vent dans le dos.";
-            } else if (step.windInfo.type === "cote") {
-                msg += ". Attention, vent de côté.";
+            if (step.windInfo.type === "tegenwind") {
+                msg += `. Tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
+            } else if (step.windInfo.type === "rug") {
+                msg += ". Rugwind.";
+            } else if (step.windInfo.type === "Kant") {
+                msg += ". Let op, zijdwind.";
             }
         }
 
@@ -591,7 +591,7 @@ function checkArrivalSimple(lat, lon, gpsAccuracy = 10) {
 
     if (distToDestination <= arrivalRadius) {
         hasAnnouncedArrival = true;
-        speakInstruction("Destination atteinte.");
+        speakInstruction("Bestemming bereikt.");
     }
 }
 
