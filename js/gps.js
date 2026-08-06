@@ -140,16 +140,16 @@ function getBestDutchVoice() {
  */
 function translateInstruction(text) {
     if (!text) return "";
-    return text
-        .replace(/turn left/gi, "tournez à gauche")
-        .replace(/turn right/gi, "tournez à droite")
-        .replace(/make a slight left/gi, "serrez légèrement à gauche")
-        .replace(/make a slight right/gi, "serrez légèrement à droite")
-        .replace(/keep left/gi, "restez sur la gauche")
-        .replace(/keep right/gi, "restez sur la droite")
-        .replace(/head/gi, "prenez la direction")
-        .replace(/onto/gi, "sur")
-        .replace(/continue/gi, "continuez");
+   return text
+        .replace(/turn left/gi, "sla linksaf")
+        .replace(/turn right/gi, "sla rechtsaf")
+        .replace(/make a slight left/gi, "houd licht links")
+        .replace(/make a slight right/gi, "houd licht rechts")
+        .replace(/keep left/gi, "houd links")
+        .replace(/keep right/gi, "houd rechts")
+        .replace(/head/gi, "ga richting")
+        .replace(/onto/gi, "naar")
+        .replace(/continue/gi, "ga verder");
 }
 
 // TTS queue processor: ensures sequential playback and returns a Promise
