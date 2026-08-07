@@ -1,3 +1,5 @@
+
+
 // ==========================================
 // CycloWind - route.js (COMPLET & AUTONOME)
 // ==========================================
@@ -116,8 +118,13 @@ function calculateWindScore(latlngs, feature) {
     let totalCost = 0;
     let count = 0;
 
-    const windDir = typeof currentWindDirection !== 'undefined' ? currentWindDirection : 0;
-    const windSpd = typeof currentWindSpeed !== 'undefined' ? currentWindSpeed : 0;
+    // Lecture cohérente : window.currentWindDirection / window.currentWindSpeed sont
+    // désormais TOUJOURS les propriétés définies explicitement par wind.js (getWind()).
+    // Avant, ce fichier lisait la variable globale SANS préfixe "window." pendant que
+    // route.js (voix) la lisait AVEC "window.". Les deux finissaient par pointer sur des
+    // choses différentes selon le mode strict/module, ce qui masquait le bug ailleurs.
+    const windDir = typeof window.currentWindDirection === "number" ? window.currentWindDirection : 0;
+    const windSpd = typeof window.currentWindSpeed === "number" ? window.currentWindSpeed : 0;
 
     for (let i = 0; i < latlngs.length - 1; i++) {
         const direction = getSegmentDirection(
@@ -160,8 +167,8 @@ function calculateWindGain(scoreNormal, scoreAlternative) {
 }
 
 function drawWindRoute(latlngs) {
-    const windDir = typeof currentWindDirection !== 'undefined' ? currentWindDirection : 0;
-    const windSpd = typeof currentWindSpeed !== 'undefined' ? currentWindSpeed : 0;
+    const windDir = typeof window.currentWindDirection === "number" ? window.currentWindDirection : 0;
+    const windSpd = typeof window.currentWindSpeed === "number" ? window.currentWindSpeed : 0;
 
     for (let i = 0; i < latlngs.length - 1; i++) {
         const direction = getSegmentDirection(latlngs[i], latlngs[i+1]);
@@ -211,24 +218,37 @@ function evaluateStepWind(step, latlngs) {
 
     if (!p1 || !p2) return null;
 
+    // Si aucune donnée vent valide n'a jamais été récupérée avec succès
+    // (getWind() jamais résolu, ex: échec réseau dès le premier appel),
+    // on ne génère aucune info vent plutôt que d'annoncer une fausse
+    // valeur (ex: "vent de face à 0 km/h" alors que ce n'est pas le cas).
+    if (typeof window.currentWindDirection !== "number" || typeof window.currentWindSpeed !== "number") {
+        return null;
+    }
+
     const routeHeading = getSegmentDirection(p1, p2);
 
-    // currentWindDirection est déjà la direction D'OÙ VIENT le vent
+    // window.currentWindDirection est déjà la direction D'OÙ VIENT le vent
     // (convention météo standard, cf. windCost()/windEffect() dans wind.js
     // qui l'utilisent sans correction). Pas de +180 ici : angle proche de 0°
     // entre le cap de la route et l'origine du vent = vent de face.
-    const windDir = window.currentWindDirection || 0;
+    const windDir = window.currentWindDirection;
 
-    const speed = Math.round(window.currentWindSpeed || 0);
+    const speed = Math.round(window.currentWindSpeed);
 
     let diff = Math.abs(routeHeading - windDir) % 360;
     if (diff > 180) diff = 360 - diff;
 
-    let type = "kant";
-    if (diff < 45) {
-        type = "voorkant";
-    } else if (diff > 135) {
-        type = "rug";
+    // Seuils élargis par rapport à windEffect()/windCost() (45°/135°) :
+    // un vent à 45-60° du cap a encore une composante de face ressentie
+    // comme significative (cos(50°) ≈ 0,64). Uniquement pour l'annonce
+    // vocale — le widget météo et le calcul de coût du trajet (wind.js)
+    // restent sur 45°/135°, volontairement non touchés.
+    let type = "cote";
+    if (diff < 60) {
+        type = "face";
+    } else if (diff > 120) {
+        type = "dos";
     }
 
     return { type, speed };
@@ -257,23 +277,27 @@ const WIND_FACE_MIN_RUN_METERS = 40;
 
 // DÉTECTION DE VENT DE FACE EN COURS D'ÉTAPE (route qui tourne progressivement
 // sans instruction de manœuvre). Classification basée UNIQUEMENT sur l'angle
-// entre le cap de la route et l'origine du vent (diff < 45°), exactement le
-// même seuil que windEffect() utilise pour qualifier "Vent de face" dans
-// wind.js. On n'utilise PAS windCost() ici : ce dernier mélange angle et
-// vitesse (pénalité = vitesse × 2 pour un vent de face, × 0.5 pour un vent
-// latéral), donc un "cost élevé" peut aussi bien être un vent latéral fort
-// qu'un vent de face modéré — inadapté pour répondre à la question "est-ce
-// un vent de face ?".
+// entre le cap de la route et l'origine du vent (diff < 60°, seuil élargi —
+// voir evaluateStepWind). On n'utilise PAS windCost() ici : ce dernier mélange
+// angle et vitesse (pénalité = vitesse × 2 pour un vent de face, × 0.5 pour un
+// vent latéral), donc un "cost élevé" peut aussi bien être un vent latéral
+// fort qu'un vent de face modéré — inadapté pour répondre à la question
+// "est-ce un vent de face ?".
 function insertMidStepFaceWindWarnings(steps, latlngs) {
     if (!steps || steps.length === 0 || !latlngs || latlngs.length < 2) return steps || [];
 
     const getDist = typeof window.getDistanceInMeters === "function" ? window.getDistanceInMeters : null;
     if (!getDist) return steps; // gps.js pas encore chargé : on ne bloque pas, pas d'annonce ajoutée
 
+    // Même garde-fou que evaluateStepWind : pas de données vent valides,
+    // pas d'annonce fantôme.
+    if (typeof window.currentWindDirection !== "number" || typeof window.currentWindSpeed !== "number") {
+        return steps;
+    }
+
     // Convention FROM, cohérente avec windCost()/windEffect() (pas de +180)
-    const windDir = window.currentWindDirection || 0;
-    const windSpd = window.currentWindSpeed || 0;
-    const roundedSpeed = Math.round(windSpd);
+    const windDir = window.currentWindDirection;
+    const roundedSpeed = Math.round(window.currentWindSpeed);
 
     const result = [];
 
@@ -304,7 +328,7 @@ function insertMidStepFaceWindWarnings(steps, latlngs) {
 
             let diff = Math.abs(direction - windDir) % 360;
             if (diff > 180) diff = 360 - diff;
-            const isFace = diff < 45; // même seuil que windEffect()
+            const isFace = diff < 60; // seuil élargi, voir evaluateStepWind pour la justification
 
             if (isFace) {
                 if (runStart === null) runStart = i;
@@ -315,7 +339,7 @@ function insertMidStepFaceWindWarnings(steps, latlngs) {
                     result.push({
                         instruction: "",
                         location: [pt[1], pt[0]],
-                        windInfo: { type: "voorkant", speed: roundedSpeed },
+                        windInfo: { type: "face", speed: roundedSpeed },
                         way_points: [runStart, runStart],
                         isWindOnly: true
                     });
@@ -332,7 +356,7 @@ function insertMidStepFaceWindWarnings(steps, latlngs) {
             result.push({
                 instruction: "",
                 location: [pt[1], pt[0]],
-                windInfo: { type: "voorkant", speed: roundedSpeed },
+                windInfo: { type: "face", speed: roundedSpeed },
                 way_points: [runStart, runStart],
                 isWindOnly: true
             });
@@ -357,26 +381,26 @@ function updateWindText(currentView, activeScore) {
     const nScore = parseFloat(window.currentNormalScore) || 0;
     const aScore = parseFloat(window.currentAltScore) || 0;
 
-    let line1 = isAlternativeView ? "Alternatieve route" : "Normal route";
-    let line2 = `Afstand : ${distanceKm} km`;
+    let line1 = isAlternativeView ? "Route alternative" : "Route normale";
+    let line2 = `Distance : ${distanceKm} km`;
     let line3 = "";
 
     if (!allData.features || allData.features.length <= 1) {
-        line3 = "Er is geen alternatief beschikbaar";
+        line3 = "Aucune alternative disponible";
     } else {
         const diffPercent = nScore > 0 ? Math.round(((aScore - nScore) / nScore) * 100) : 0;
         const absDiff = Math.min(Math.abs(diffPercent), 90);
 
         if (Math.abs(diffPercent) < 5) {
-            line3 = "Op beide trajecten waait een vergelijkbare wind";
+            line3 = "Vent similaire sur les 2 trajets";
         } else if (diffPercent < 0) {
             line3 = isAlternativeView
-                ? `Ongeveer ${absDiff}% minder moeite`
-                : `Het alternatief bespaart ${absDiff}%`;
+                ? `Environ ${absDiff}% d'effort en moins`
+                : `L'alternative économise ${absDiff}%`;
         } else {
             line3 = isAlternativeView
-                ? `Ongeveer ${absDiff}% extra moeite`
-                : `De gewone route is meer beschut`;
+                ? `Environ ${absDiff}% d'effort en plus`
+                : `La route normale est plus abritée`;
         }
     }
 
@@ -394,12 +418,12 @@ function updateWindText(currentView, activeScore) {
 // Calcul trajet principal
 async function getRoute() {
     if (!window.userPosition) {
-        alert("Bepaal eerst je positie");
+        alert("Définissez votre position d'abord");
         return;
     }
     
     if (!window.destination) {
-        alert("Kies een bestemming uit de lijst");
+        alert("Choisissez une destination dans la liste");
         return;
     }
     
@@ -414,7 +438,7 @@ async function getRoute() {
     const allRoutesData = await getAlternativeRoute(start, endLat, endLon);
     
     if (!allRoutesData.features || allRoutesData.features.length === 0) {
-        alert("Er is geen route gevonden");
+        alert("Aucun itinéraire trouvé");
         return;
     }
 
@@ -439,6 +463,7 @@ async function getRoute() {
     const firstDir = getSegmentDirection(latlngsNormal[0], latlngsNormal[1]);
     
     await getWind(start.lat, start.lng, firstDir);
+    window.windDataTimestamp = Date.now();
     
     drawWindRoute(latlngsNormal);
 
@@ -483,7 +508,7 @@ async function getRoute() {
         if (allRoutesData.features.length > 1) {
             toggleBtn.style.display = "block";
             let showingAlternative = false;
-            toggleBtn.innerText = "Bekijk de alternatieve route";
+            toggleBtn.innerText = "Voir la route alternative";
 
             toggleBtn.onclick = function() {
                 window.routeGroup.clearLayers();
@@ -493,7 +518,7 @@ async function getRoute() {
 
                 if (!showingAlternative) {
                     drawWindRoute(window.latlngsAlternativePersist);
-                    toggleBtn.innerText = "De normale route bekijken";
+                    toggleBtn.innerText = "Voir la route normale";
                     updateWindText("alternative", alternativeScore);
                     window.routeSteps = window.altSteps;
 
@@ -506,7 +531,7 @@ async function getRoute() {
                     showingAlternative = true;
                 } else {
                     drawWindRoute(window.latlngsNormalPersist);
-                    toggleBtn.innerText = "Bekijk de alternatieve route";
+                    toggleBtn.innerText = "Voir la route alternative";
                     updateWindText("normale", normalScore);
                     window.routeSteps = window.normSteps;
 
@@ -537,18 +562,18 @@ function startNavigation() {
     }
 
     if (!window.userPosition) {
-        alert("GPS-positie niet gedetecteerd. Kan niet starten.");
+        alert("Position GPS non détectée. Impossible de démarrer.");
         return;
     }
 
     if (!window.routeSteps || window.routeSteps.length === 0) {
-        alert("Er is geen route beschikbaar om te bekijken.");
+        alert("Aucun itinéraire prêt pour la navigation.");
         return;
     }
 
     if (!window.isNavigating) {
         window.isNavigating = true;
-        btn.innerText = "Stoppen";
+        btn.innerText = "Arrêter";
         btn.style.backgroundColor = "#e74c3c";
 
         Promise.resolve(requestWakeLock()).catch(err => {
@@ -567,7 +592,7 @@ function startNavigation() {
         }
         // Salutation immédiate, puis annonce enchaînée : première instruction -> info vent
         if (typeof speakInstruction === "function") {
-            speakInstruction("Navigatie gestart. Goede reis!").then(() => {
+            speakInstruction("Navigation démarrée. Bonne route !").then(() => {
                 const firstStep = (window.routeSteps && window.routeSteps[0]) ? window.routeSteps[0] : null;
                 if (firstStep && firstStep.instruction) {
                     //Empêche checkVoiceNavigation (gps.js)au premier point GPS reçu après le démarrage
@@ -576,11 +601,11 @@ function startNavigation() {
                     speakInstruction(firstStep.instruction).then(() => {
                         if (firstStep.windInfo) {
                             const wi = firstStep.windInfo;
-                            const windMsg = wi.type === "tegenwind"
-                                ? `Tegenwind uit ${wi.speed} kilometer per uur.`
-                                : wi.type === "rug"
-                                    ? "Rugwind."
-                                    : "Let op, zijwind.";
+                            const windMsg = wi.type === "face"
+                                ? `Vent de face à ${wi.speed} kilomètres heure.`
+                                : wi.type === "dos"
+                                    ? "Vent dans le dos."
+                                    : "Attention, vent de côté.";
                             speakInstruction(windMsg);
                         }
                     });
@@ -588,7 +613,7 @@ function startNavigation() {
                     // si pas d'étape, on peut annoncer le vent global si disponible
                     const globalWindSpd = window.currentWindSpeed || 0;
                     if (globalWindSpd) {
-                        speakInstruction(`Wind ${globalWindSpd} kilometer per uur.`);
+                        speakInstruction(`Vent ${globalWindSpd} kilomètres heure.`);
                     }
                 }
             });
@@ -607,7 +632,7 @@ function startNavigation() {
     } else {
         // STOP navigation
         window.isNavigating = false;
-        btn.innerText = "Start";
+        btn.innerText = "Démarrer";
         btn.style.backgroundColor = "#2ecc71";
 
         releaseWakeLock();
@@ -696,14 +721,23 @@ async function recalculateRouteFromDeviation(lat, lon) {
             latlngsAlternative = coordsAlt.map(point => [point[1], point[0]]);
         }
 
-        const firstDir = getSegmentDirection(latlngsNormal[0], latlngsNormal[1]);
-        await getWind(start.lat, start.lng, firstDir);
-
-        // Deuxième vérification : getWind() est aussi asynchrone, un retour
-        // naturel a pu survenir pendant cet appel également.
-        if (myToken !== deviationToken) {
-            console.log("[Route] Recalcul ignoré (après getWind) : retour naturel entre-temps.");
-            return;
+        // Pas de getWind() bloquant ici : le recalcul doit rester rapide (voir
+        // la période de grâce et la boucle "vous vous éloignez..." corrigées
+        // plus tôt). On réutilise les valeurs déjà connues
+        // (window.currentWindDirection / window.currentWindSpeed) pour ne pas
+        // ajouter de latence au moment critique.
+        //
+        // Mais on rafraîchit quand même en ARRIÈRE-PLAN (sans attendre la
+        // réponse) si la dernière donnée date de plus de 15 minutes, pour
+        // éviter d'utiliser une donnée trop périmée sur un trajet long ou
+        // après une grosse déviation géographique.
+        const WIND_DATA_MAX_AGE_MS = 15 * 60 * 1000;
+        const windIsStale = !window.windDataTimestamp || (Date.now() - window.windDataTimestamp) > WIND_DATA_MAX_AGE_MS;
+        if (windIsStale && typeof getWind === "function") {
+            const bgWindDir = getSegmentDirection(latlngsNormal[0], latlngsNormal[1]);
+            getWind(start.lat, start.lng, bgWindDir)
+                .then(() => { window.windDataTimestamp = Date.now(); })
+                .catch(() => { /* échec silencieux : on retentera au prochain recalcul */ });
         }
 
         const normalScore = calculateWindScore(latlngsNormal, normalFeature);
@@ -770,11 +804,15 @@ async function recalculateRouteFromDeviation(lat, lon) {
             window.resetVoiceNavigationState();
         }
         if (typeof window.resetOffRouteAndArrivalState === "function") {
-            window.resetOffRouteAndArrivalState();
+            window.resetOffRouteAndArrivalState(); // remet __routeJustRecalculatedUntil à 0
         }
+        // Période de grâce : laisse 8s au GPS pour se stabiliser sur le
+        // nouveau tracé avant de recommencer à évaluer l'écart au trajet.
+        // Doit être défini APRÈS resetOffRouteAndArrivalState (qui le remet à 0).
+        window.__routeJustRecalculatedUntil = Date.now() + 8000;
 
         if (typeof speakInstruction === "function") {
-            speakInstruction("Nieuwe route berekend.");
+            speakInstruction("Nouvel itinéraire calculé.");
         }
 
     } catch (err) {
