@@ -149,17 +149,17 @@ function getBestFrenchVoice() {
 function translateInstruction(text) {
     if (!text) return "";
     return text
-        .replace(/turn left/gi, "tournez à gauche")
-        .replace(/turn right/gi, "tournez à droite")
-        .replace(/sharp turn right/gi, "virrage serré à droite")
-        .replace(/sharp turn left/gi, "virrage serré à gauche")
-        .replace(/turn slightly left/gi, "serrez légèrement à gauche")
-        .replace(/turn slightly right/gi, "serrez légèrement à droite")
-        .replace(/keep left/gi, "restez sur la gauche")
-        .replace(/keep right/gi, "restez sur la droite")
-        .replace(/head/gi, "prenez la direction")
-        .replace(/onto/gi, "sur")
-        .replace(/continue/gi, "continuez");
+        .replace(/turn left/gi, "sla linksaf")
+        .replace(/turn right/gi, "sla rechtsaf")
+        .replace(/sharp right/gi, "scherpe bocht naar rechts")
+        .replace(/sharp left/gi, "scherpe bocht naar links")
+        .replace(/make a slight left/gi, "draai iets naar links")
+        .replace(/make a slight right/gi, "draai iets naar rechts")
+        .replace(/keep left/gi, "houd links aan")
+        .replace(/keep right/gi, "houd rechts aan")
+        .replace(/head/gi, "neem de richting")
+        .replace(/onto/gi, "op")
+        .replace(/continue/gi, "ga verder");
 }
 
 // TTS queue processor: ensures sequential playback and returns a Promise
@@ -210,7 +210,7 @@ function processTtsQueue() {
         const utterance = new SpeechSynthesisUtterance(cleanedText);
         const voice = getBestFrenchVoice();
         if (voice) utterance.voice = voice;
-        utterance.lang = "fr-FR";
+        //utterance.lang = "fr-FR";
         utterance.rate = 0.95;
 
         utterance.onend = finish;
@@ -431,7 +431,7 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
         offRouteHighCount = 0;
 
         if (!offRouteHasWarned && (now - lastOffRouteSpokenTime > offRouteCooldown)) {
-            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à rejoindre l'itinéraire.");
+            speakInstruction("U wijkt af van de route. Vergeet niet om te keren of weer op de route terug te keren.");
             lastOffRouteSpokenTime = now;
             offRouteHasWarned = true;
         }
@@ -570,19 +570,19 @@ function checkVoiceNavigation(lat, lon, gpsAccuracy = 10) {
             msg = step.instruction;
 
             if (step.windInfo) {
-                if (step.windInfo.type === "face") {
-                    msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
-                } else if (step.windInfo.type === "dos") {
-                    msg += ". Vent dans le dos.";
-                } else if (step.windInfo.type === "cote") {
-                    msg += ". Attention, vent de côté.";
+                if (step.windInfo.type === "voorkant") {
+                    msg += `. Tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
+                } else if (step.windInfo.type === "rug") {
+                    msg += ". Rugwind.";
+                } else if (step.windInfo.type === "kant") {
+                    msg += ". Let op, zijwind.";
                 }
             }
         } else if (step.isWindOnly && step.windInfo && step.windInfo.type === "face") {
             // Pseudo-étape insérée par route.js : pas de changement de
             // direction ici, uniquement un signalement de vent de face
             // détecté en cours de route (virage progressif, ligne droite...).
-            msg = `Attention, vent de face à ${step.windInfo.speed} kilomètres heure.`;
+            msg = `Let op, tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
         }
 
         if (msg) {
@@ -628,11 +628,11 @@ function checkArrivalSimple(lat, lon, gpsAccuracy = 10) {
     if (typeof destLat !== "number" || typeof destLon !== "number") return;
 
     const distToDestination = getDistanceInMeters(lat, lon, destLat, destLon);
-    const arrivalRadius = Math.max(15, Math.min(30, gpsAccuracy + 8));
+    const arrivalRadius = Math.max(20, Math.min(35, gpsAccuracy + 8));
 
     if (distToDestination <= arrivalRadius) {
         hasAnnouncedArrival = true;
-        speakInstruction("Destination atteinte.");
+        speakInstruction("bestemming bereikt.");
     }
 }
 
@@ -738,7 +738,7 @@ function initGeolocation() {
         err => {
             console.warn("[GPS] Erreur de géolocalisation :", err);
             if (window.isNavigating && err.code === err.PERMISSION_DENIED) {
-                speakInstruction("Attention, la géolocalisation a été refusée. La navigation ne peut plus continuer.");
+                speakInstruction("Let op: de geolocatie is geweigerd. De navigatie kan niet worden voortgezet.");
             }
         },
         {
@@ -758,7 +758,7 @@ function initGeolocation() {
         const staleFor = Date.now() - lastGpsFixTime;
         if (staleFor > 25000 && !hasWarnedGpsStale) {
             hasWarnedGpsStale = true;
-            speakInstruction("Signal GPS perdu depuis un moment. Vérifiez votre position.");
+            speakInstruction("Het GPS-signaal is al een tijdje weg. Controleer je positie.");
         }
     }, 10000);
 }
