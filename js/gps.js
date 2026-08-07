@@ -182,8 +182,8 @@ function processTtsQueue() {
         const utterance = new SpeechSynthesisUtterance(cleanedText);
         const voice = getBestDutchVoice();
         if (voice) utterance.voice = voice;
-        utterance.lang = "nl-NL";
-        utterance.rate = 0.95;
+       // utterance.lang = "nl-NL";
+        utterance.rate = 1;
 
         utterance.onend = () => {
             item.resolve();
