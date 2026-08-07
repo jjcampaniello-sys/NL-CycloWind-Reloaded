@@ -1,4 +1,3 @@
-
 // ==========================================
 // CycloWind - gps.js (CORRIGÉ & SYNCHRONISÉ)
 // ==========================================
@@ -30,6 +29,9 @@ let offRouteLowCount = 0;
 // Indique si on a déjà averti pour la sortie courante (reset au retour)
 let offRouteHasWarned = false;
 
+// Cooldown de réessai du recalcul automatique (indépendant de l'avertissement vocal)
+let lastRerouteAttemptTime = 0;
+
 // ==============================
 // ETAT INTERNE DU GUIDAGE VOCAL
 // ==============================
@@ -53,7 +55,9 @@ function resetOffRouteAndArrivalState() {
     offRouteHighCount = 0;
     offRouteLowCount = 0;
     lastOffRouteSpokenTime = 0;
+    lastRerouteAttemptTime = 0;
     hasAnnouncedArrival = false;
+    hasWarnedGpsStale = false;
 }
 window.resetOffRouteAndArrivalState = resetOffRouteAndArrivalState;
 
@@ -66,7 +70,8 @@ const gpsDefaults = {
     offRouteExitMultiplier: 1.2,         // multiplicateur gpsAccuracy pour seuil retour
     offRouteConsecutive: 2,              // relevés consécutifs pour déclarer sortie
     offRouteCooldownMs: 30000,           // cooldown alerte hors-trajet (ms)
-    updateIntervalMs: 200                // intervalle minimum entre calculs (ms)
+    updateIntervalMs: 200,               // intervalle minimum entre calculs (ms)
+    rerouteRetryCooldownMs: 15000        // intervalle minimum entre 2 tentatives de recalcul auto (ms)
 };
 
 let gpsRuntime = Object.assign({}, gpsDefaults);
@@ -80,6 +85,7 @@ function applyGpsSettingsFromWindow() {
         gpsRuntime.offRouteConsecutive = Math.max(1, parseInt(s.offRouteConsecutive) || gpsDefaults.offRouteConsecutive);
         gpsRuntime.offRouteCooldownMs = Math.max(1000, Number(s.offRouteCooldownMs) || gpsDefaults.offRouteCooldownMs);
         gpsRuntime.updateIntervalMs = Math.max(50, parseInt(s.updateIntervalMs) || gpsDefaults.updateIntervalMs);
+        gpsRuntime.rerouteRetryCooldownMs = Math.max(3000, Number(s.rerouteRetryCooldownMs) || gpsDefaults.rerouteRetryCooldownMs);
     } catch (e) {
         gpsRuntime = Object.assign({}, gpsDefaults);
     }
@@ -125,13 +131,13 @@ function shouldUpdate() {
 // ==============================
 // VOIX HORS-LIGNE (LOCAL SERVICE)
 // ==============================
-function getBestDutchVoice() {
+function getBestFrenchVoice() {
     if (!("speechSynthesis" in window)) return null;
     const voices = speechSynthesis.getVoices();
     if (!voices || voices.length === 0) return null;
 
-    return voices.find(v => v.lang.startsWith("nl") && v.localService === true) ||
-           voices.find(v => v.lang.startsWith("nl")) ||
+    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("fr")) ||
            null;
 }
 
@@ -140,16 +146,16 @@ function getBestDutchVoice() {
  */
 function translateInstruction(text) {
     if (!text) return "";
-   return text
-        .replace(/turn left/gi, "sla linksaf")
-        .replace(/turn right/gi, "sla rechtsaf")
-        .replace(/make a slight left/gi, "houd licht links")
-        .replace(/make a slight right/gi, "houd licht rechts")
-        .replace(/keep left/gi, "houd links")
-        .replace(/keep right/gi, "houd rechts")
-        .replace(/head/gi, "ga richting")
-        .replace(/onto/gi, "naar")
-        .replace(/continue/gi, "ga verder");
+    return text
+        .replace(/turn left/gi, "tournez à gauche")
+        .replace(/turn right/gi, "tournez à droite")
+        .replace(/make a slight left/gi, "serrez légèrement à gauche")
+        .replace(/make a slight right/gi, "serrez légèrement à droite")
+        .replace(/keep left/gi, "restez sur la gauche")
+        .replace(/keep right/gi, "restez sur la droite")
+        .replace(/head/gi, "prenez la direction")
+        .replace(/onto/gi, "sur")
+        .replace(/continue/gi, "continuez");
 }
 
 // TTS queue processor: ensures sequential playback and returns a Promise
@@ -160,6 +166,26 @@ function processTtsQueue() {
     ttsRunning = true;
 
     const item = ttsQueue.shift();
+
+    // Garde-fou anti-blocage : si le moteur de synthèse vocale ne répond
+    // plus (écran verrouillé, page en arrière-plan...), onend/onerror
+    // peuvent ne jamais se déclencher. Sans ce filet, ttsRunning resterait
+    // bloqué à true pour toujours et plus AUCUNE annonce suivante ne
+    // pourrait jamais être lue pour le reste de la navigation.
+    let settled = false;
+    const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdogId);
+        item.resolve();
+        ttsRunning = false;
+        setTimeout(processTtsQueue, 0);
+    };
+    const watchdogId = setTimeout(() => {
+        console.warn("[TTS] Timeout de synthèse vocale (probablement écran verrouillé/app en arrière-plan) : file débloquée.");
+        finish();
+    }, 15000);
+
     try {
         let translated = translateInstruction(item.text);
         let cleanedText = translated
@@ -173,34 +199,22 @@ function processTtsQueue() {
             .trim();
 
         if (!cleanedText) {
-            item.resolve();
-            ttsRunning = false;
-            setTimeout(processTtsQueue, 0);
+            finish();
             return;
         }
 
         const utterance = new SpeechSynthesisUtterance(cleanedText);
-        const voice = getBestDutchVoice();
+        const voice = getBestFrenchVoice();
         if (voice) utterance.voice = voice;
-       // utterance.lang = "nl-NL";
-        utterance.rate = 1;
+        utterance.lang = "fr-FR";
+        utterance.rate = 0.95;
 
-        utterance.onend = () => {
-            item.resolve();
-            ttsRunning = false;
-            setTimeout(processTtsQueue, 0);
-        };
-        utterance.onerror = () => {
-            item.resolve();
-            ttsRunning = false;
-            setTimeout(processTtsQueue, 0);
-        };
+        utterance.onend = finish;
+        utterance.onerror = finish;
 
         speechSynthesis.speak(utterance);
     } catch (e) {
-        item.resolve();
-        ttsRunning = false;
-        setTimeout(processTtsQueue, 0);
+        finish();
     }
 }
 
@@ -386,6 +400,7 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
     const offRouteExitThreshold = Math.max(8, Math.min(120, gpsAccuracy * (gpsRuntime.offRouteExitMultiplier || 1.2)));
     const offRouteCooldown = Math.max(1000, gpsRuntime.offRouteCooldownMs || 30000);
     const requiredHighCount = Math.max(1, gpsRuntime.offRouteConsecutive || 2);
+    const rerouteRetryCooldown = Math.max(3000, gpsRuntime.rerouteRetryCooldownMs || 15000);
 
     if (distFromTrack >= offRouteEnterThreshold) {
         offRouteHighCount++;
@@ -403,24 +418,10 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
         offRouteHighCount = 0;
 
         if (!offRouteHasWarned && (now - lastOffRouteSpokenTime > offRouteCooldown)) {
-            speakInstruction("U wijkt af van de route. Vergeet niet om te keren of weer op de route terug te keren.");
+            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à rejoindre l'itinéraire.");
             lastOffRouteSpokenTime = now;
             offRouteHasWarned = true;
-
-            // Hook optionnel de recalcul automatique d'itinéraire.
-            // gps.js ne sait rien de l'API de routing : si route.js définit
-            // window.onRouteDeviationConfirmed, on l'appelle avec la position
-            // actuelle ; sinon ce bloc ne fait strictement rien (comportement
-            // inchangé si le hook n'est pas implémenté).
-            if (typeof window.onRouteDeviationConfirmed === "function") {
-                try {
-                    window.onRouteDeviationConfirmed({ lat, lon, gpsAccuracy });
-                } catch (e) {
-                    console.warn("[GPS] onRouteDeviationConfirmed a échoué :", e);
-                }
-            }
         }
-        return;
     }
 
     if (wasOffRoute && offRouteLowCount >= 2 && snap.segmentIndex >= 0) {
@@ -429,6 +430,7 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
         offRouteHighCount = 0;
         offRouteHasWarned = false;
         lastOffRouteSpokenTime = 0;
+        lastRerouteAttemptTime = 0;
 
         const routeProgress = snap.segmentIndex + snap.t;
         const nextStepIndex = findNextStepIndexFromProgress(routeProgress, window.routeSteps);
@@ -448,6 +450,23 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
                 window.onRouteRecoveryConfirmed({ lat, lon });
             } catch (e) {
                 console.warn("[GPS] onRouteRecoveryConfirmed a échoué :", e);
+            }
+        }
+        return;
+    }
+
+    // Tentative de recalcul périodique tant qu'on reste hors trajet.
+    // Volontairement indépendant de offRouteHasWarned (qui ne gère que
+    // l'avertissement vocal) : si un précédent recalcul a échoué (coupure
+    // réseau...), on réessaie automatiquement toutes les rerouteRetryCooldown
+    // ms, sans exiger un retour complet sur l'ancien trajet.
+    if (wasOffRoute && (now - lastRerouteAttemptTime > rerouteRetryCooldown)) {
+        lastRerouteAttemptTime = now;
+        if (typeof window.onRouteDeviationConfirmed === "function") {
+            try {
+                window.onRouteDeviationConfirmed({ lat, lon, gpsAccuracy });
+            } catch (e) {
+                console.warn("[GPS] onRouteDeviationConfirmed a échoué :", e);
             }
         }
     }
@@ -532,16 +551,25 @@ function checkVoiceNavigation(lat, lon, gpsAccuracy = 10) {
         dist <= triggerRadius &&
         window.currentStepIndex !== window.lastSpokenStepIndex) {
 
-        let msg = step.instruction || "";
+        let msg = "";
 
-        if (step.windInfo) {
-            if (step.windInfo.type === "tegenwind") {
-                msg += `. Tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
-            } else if (step.windInfo.type === "rug") {
-                msg += ". Rugwind.";
-            } else if (step.windInfo.type === "Kant") {
-                msg += ". Let op, zijdwind.";
+        if (step.instruction) {
+            msg = step.instruction;
+
+            if (step.windInfo) {
+                if (step.windInfo.type === "face") {
+                    msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
+                } else if (step.windInfo.type === "dos") {
+                    msg += ". Vent dans le dos.";
+                } else if (step.windInfo.type === "cote") {
+                    msg += ". Attention, vent de côté.";
+                }
             }
+        } else if (step.isWindOnly && step.windInfo && step.windInfo.type === "face") {
+            // Pseudo-étape insérée par route.js : pas de changement de
+            // direction ici, uniquement un signalement de vent de face
+            // détecté en cours de route (virage progressif, ligne droite...).
+            msg = `Attention, vent de face à ${step.windInfo.speed} kilomètres heure.`;
         }
 
         if (msg) {
@@ -591,7 +619,7 @@ function checkArrivalSimple(lat, lon, gpsAccuracy = 10) {
 
     if (distToDestination <= arrivalRadius) {
         hasAnnouncedArrival = true;
-        speakInstruction("Bestemming bereikt.");
+        speakInstruction("Destination atteinte.");
     }
 }
 
@@ -676,11 +704,16 @@ function onLocationUpdate(rawLat, rawLon, headingGps = null, speed = null, gpsAc
 // ==============================
 // INITIALISATION GPS
 // ==============================
+let lastGpsFixTime = 0;
+let hasWarnedGpsStale = false;
+
 function initGeolocation() {
     if (!navigator.geolocation) return;
 
     navigator.geolocation.watchPosition(
         pos => {
+            lastGpsFixTime = Date.now();
+            hasWarnedGpsStale = false;
             onLocationUpdate(
                 pos.coords.latitude,
                 pos.coords.longitude,
@@ -689,13 +722,32 @@ function initGeolocation() {
                 pos.coords.accuracy
             );
         },
-        err => console.warn(err),
+        err => {
+            console.warn("[GPS] Erreur de géolocalisation :", err);
+            if (window.isNavigating && err.code === err.PERMISSION_DENIED) {
+                speakInstruction("Attention, la géolocalisation a été refusée. La navigation ne peut plus continuer.");
+            }
+        },
         {
             enableHighAccuracy: true,
             maximumAge: 1000,
             timeout: 10000
         }
     );
+
+    // Surveillance périodique : avertit à la voix si aucun point GPS n'a été
+    // reçu depuis trop longtemps pendant la navigation (signal perdu, onglet
+    // suspendu par l'OS, etc.). Sans ça, une perte de signal est totalement
+    // silencieuse pour un cycliste qui ne regarde pas l'écran en continu.
+    setInterval(() => {
+        if (!window.isNavigating) return;
+        if (lastGpsFixTime === 0) return; // aucun premier point encore reçu
+        const staleFor = Date.now() - lastGpsFixTime;
+        if (staleFor > 25000 && !hasWarnedGpsStale) {
+            hasWarnedGpsStale = true;
+            speakInstruction("Signal GPS perdu depuis un moment. Vérifiez votre position.");
+        }
+    }, 10000);
 }
 
 document.addEventListener("DOMContentLoaded", initGeolocation);
@@ -706,3 +758,5 @@ window.releaseWakeLock = releaseWakeLock;
 window.onLocationUpdate = onLocationUpdate;
 window.resetVoiceNavigationState = resetVoiceNavigationState;
 window.speakInstruction = speakInstruction;
+window.getDistanceInMeters = getDistanceInMeters; // réutilisé par route.js pour la détection vent en cours d'étape
+
