@@ -774,7 +774,7 @@ async function recalculateRouteFromDeviation(lat, lon) {
         }
 
         if (typeof speakInstruction === "function") {
-            speakInstruction("Nouvel itinéraire calculé.");
+            speakInstruction("Nieuwe route berekend.");
         }
 
     } catch (err) {
