@@ -224,11 +224,11 @@ function evaluateStepWind(step, latlngs) {
     let diff = Math.abs(routeHeading - windDir) % 360;
     if (diff > 180) diff = 360 - diff;
 
-    let type = "cote";
+    let type = "kant";
     if (diff < 45) {
-        type = "face";
+        type = "voorkant";
     } else if (diff > 135) {
-        type = "dos";
+        type = "rug";
     }
 
     return { type, speed };
@@ -315,7 +315,7 @@ function insertMidStepFaceWindWarnings(steps, latlngs) {
                     result.push({
                         instruction: "",
                         location: [pt[1], pt[0]],
-                        windInfo: { type: "face", speed: roundedSpeed },
+                        windInfo: { type: "voorkant", speed: roundedSpeed },
                         way_points: [runStart, runStart],
                         isWindOnly: true
                     });
@@ -332,7 +332,7 @@ function insertMidStepFaceWindWarnings(steps, latlngs) {
             result.push({
                 instruction: "",
                 location: [pt[1], pt[0]],
-                windInfo: { type: "face", speed: roundedSpeed },
+                windInfo: { type: "voorkant", speed: roundedSpeed },
                 way_points: [runStart, runStart],
                 isWindOnly: true
             });
