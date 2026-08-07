@@ -3,7 +3,7 @@
 // ==========================================
 // CycloWind - route.js (COMPLET & AUTONOME)
 // ==========================================
-
+"dos"
 // Direction segment route
 function getSegmentDirection(p1, p2) {
     if (!p1 || !p2) return 0;
@@ -244,11 +244,11 @@ function evaluateStepWind(step, latlngs) {
     // comme significative (cos(50°) ≈ 0,64). Uniquement pour l'annonce
     // vocale — le widget météo et le calcul de coût du trajet (wind.js)
     // restent sur 45°/135°, volontairement non touchés.
-    let type = "cote";
+    let type = "kant";
     if (diff < 60) {
-        type = "face";
+        type = "voorkant";
     } else if (diff > 120) {
-        type = "dos";
+        type = "rug";
     }
 
     return { type, speed };
