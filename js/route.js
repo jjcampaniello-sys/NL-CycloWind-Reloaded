@@ -3,7 +3,7 @@
 // ==========================================
 // CycloWind - route.js (COMPLET & AUTONOME)
 // ==========================================
-"dos"
+
 // Direction segment route
 function getSegmentDirection(p1, p2) {
     if (!p1 || !p2) return 0;
