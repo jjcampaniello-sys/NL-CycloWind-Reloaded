@@ -138,8 +138,8 @@ function getBestFrenchVoice() {
     const voices = speechSynthesis.getVoices();
     if (!voices || voices.length === 0) return null;
 
-    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
-           voices.find(v => v.lang.startsWith("fr")) ||
+    return voices.find(v => v.lang.startsWith("nl") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("nl")) ||
            null;
 }
 
