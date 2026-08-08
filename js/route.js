@@ -1,5 +1,4 @@
 
-
 // ==========================================
 // CycloWind - route.js (COMPLET & AUTONOME)
 // ==========================================
@@ -120,9 +119,6 @@ function calculateWindScore(latlngs, feature) {
 
     // Lecture cohérente : window.currentWindDirection / window.currentWindSpeed sont
     // désormais TOUJOURS les propriétés définies explicitement par wind.js (getWind()).
-    // Avant, ce fichier lisait la variable globale SANS préfixe "window." pendant que
-    // route.js (voix) la lisait AVEC "window.". Les deux finissaient par pointer sur des
-    // choses différentes selon le mode strict/module, ce qui masquait le bug ailleurs.
     const windDir = typeof window.currentWindDirection === "number" ? window.currentWindDirection : 0;
     const windSpd = typeof window.currentWindSpeed === "number" ? window.currentWindSpeed : 0;
 
@@ -183,7 +179,7 @@ function drawWindRoute(latlngs) {
             {
                 color: color,
                 weight: 4,
-                opacity: 0.7,
+                opacity: 0.8,
                 pane: 'overlayPane'
             }
         ).addTo(window.routeGroup);
@@ -200,7 +196,7 @@ function drawGrayRoute(latlngs) {
         {
             color: "gray",
             weight: 3,
-            opacity: 0.6,
+            opacity: 0.5,
             pane: 'overlayPane'
         }
     ).addTo(window.routeGroup);
@@ -392,14 +388,14 @@ function updateWindText(currentView, activeScore) {
         const absDiff = Math.min(Math.abs(diffPercent), 90);
 
         if (Math.abs(diffPercent) < 5) {
-            line3 = "vergelijkbare wind op beide trajecten ";
+            line3 = "Vergelijkbare wind op beide trajecten";
         } else if (diffPercent < 0) {
             line3 = isAlternativeView
                 ? `Ongeveer ${absDiff}% minder moeite`
                 : `Het alternatief bespaart ${absDiff}%`;
         } else {
             line3 = isAlternativeView
-                ? `Ongeveer ${absDiff}% extra moeite`
+                ? `Ongeveer ${absDiff}% meer moeite`
                 : `De gewone route is meer beschut`;
         }
     }
@@ -414,6 +410,14 @@ function updateWindText(currentView, activeScore) {
     }
 }
 
+// Flag : une seule annonce vocale "Nouvel itinéraire calculé" par épisode de
+// déviation. Remis à false uniquement lors d'un VRAI retour sur le trajet
+// (onRouteRecoveryConfirmed, déclenché par gps.js) ou au (re)démarrage /
+// arrêt de la navigation / calcul d'un nouvel itinéraire manuel. Tant que ce
+// flag est true, recalculateRouteFromDeviation() continue de recalculer et
+// mettre à jour le tracé en arrière-plan (utile si le cycliste s'éloigne
+// encore), mais reste silencieuse.
+let hasAnnouncedRecalcForCurrentDeviation = false;
 
 // Calcul trajet principal
 async function getRoute() {
@@ -494,6 +498,9 @@ async function getRoute() {
     if (typeof window.resetVoiceNavigationState === "function") {
         window.resetVoiceNavigationState();
     }
+    // Nouvel itinéraire manuel : on repart sur un état vierge pour l'annonce
+    // de recalcul automatique.
+    hasAnnouncedRecalcForCurrentDeviation = false;
 
     updateWindText("normale", normalScore);
 
@@ -590,6 +597,10 @@ function startNavigation() {
         if (typeof window.resetOffRouteAndArrivalState === "function") {
             window.resetOffRouteAndArrivalState();
         }
+        // Nouvelle session de navigation : premier épisode de déviation à venir
+        // pourra de nouveau être annoncé.
+        hasAnnouncedRecalcForCurrentDeviation = false;
+
         // Salutation immédiate, puis annonce enchaînée : première instruction -> info vent
         if (typeof speakInstruction === "function") {
             speakInstruction("Navigatie gestart. Goede reis!").then(() => {
@@ -602,7 +613,7 @@ function startNavigation() {
                         if (firstStep.windInfo) {
                             const wi = firstStep.windInfo;
                             const windMsg = wi.type === "voorkant"
-                                ? `Tegenwind uit ${wi.speed} kilometer per uur.`
+                                ? `Tegenn wind uit ${wi.speed} kilometer per uur.`
                                 : wi.type === "rug"
                                     ? "Rugwind."
                                     : "Let op, zijwind.";
@@ -632,7 +643,7 @@ function startNavigation() {
     } else {
         // STOP navigation
         window.isNavigating = false;
-        btn.innerText = "Start";
+        btn.innerText = "Starten";
         btn.style.backgroundColor = "#2ecc71";
 
         releaseWakeLock();
@@ -655,6 +666,8 @@ function startNavigation() {
         if (typeof window.resetOffRouteAndArrivalState === "function") {
             window.resetOffRouteAndArrivalState();
         }
+        hasAnnouncedRecalcForCurrentDeviation = false;
+
         if (windInfoPanel) {
             windInfoPanel.classList.remove("nav-hidden");
         }
@@ -676,6 +689,9 @@ function startNavigation() {
 //   - part de la position actuelle du cycliste (pas de window.userPosition initial)
 //   - choisit automatiquement le trajet le moins exposé au vent via chooseBestRoute
 //   - ne touche pas à window.isNavigating (la navigation continue sans coupure)
+//   - n'annonce "Nouvel itinéraire calculé" qu'UNE SEULE FOIS par épisode de
+//     déviation (voir hasAnnouncedRecalcForCurrentDeviation), même si elle est
+//     appelée plusieurs fois de suite tant que le cycliste reste hors trajet.
 let isRecalculatingRoute = false;
 let deviationToken = 0; // incrémenté à chaque recalcul lancé ET à chaque retour naturel confirmé
 
@@ -803,16 +819,27 @@ async function recalculateRouteFromDeviation(lat, lon) {
         if (typeof window.resetVoiceNavigationState === "function") {
             window.resetVoiceNavigationState();
         }
-        if (typeof window.resetOffRouteAndArrivalState === "function") {
-            window.resetOffRouteAndArrivalState(); // remet __routeJustRecalculatedUntil à 0
-        }
-        // Période de grâce : laisse 8s au GPS pour se stabiliser sur le
-        // nouveau tracé avant de recommencer à évaluer l'écart au trajet.
-        // Doit être défini APRÈS resetOffRouteAndArrivalState (qui le remet à 0).
-        window.__routeJustRecalculatedUntil = Date.now() + 8000;
 
-        if (typeof speakInstruction === "function") {
-            speakInstruction("Nieuwe route berekend.");
+        // Reset LÉGER (voir gps.js) : ne remet PAS wasOffRoute/offRouteHasWarned/
+        // lastRerouteAttemptTime à zéro. On reste dans le MÊME épisode de
+        // déviation tant qu'un retour réel sur le trajet n'a pas été confirmé
+        // par checkOffRoute. Ouvre juste une période de grâce de 8s pour que
+        // le GPS se stabilise sur le nouveau tracé.
+        if (typeof window.resetAfterAutoRecalculation === "function") {
+            window.resetAfterAutoRecalculation();
+        } else {
+            window.__routeJustRecalculatedUntil = Date.now() + 8000;
+        }
+
+        // Annonce vocale UNE SEULE FOIS par épisode de déviation : les
+        // recalculs suivants (si le cycliste reste hors trajet) mettent bien
+        // à jour le tracé et le guidage, mais restent silencieux tant qu'un
+        // vrai retour sur le trajet (onRouteRecoveryConfirmed) n'a pas eu lieu.
+        if (!hasAnnouncedRecalcForCurrentDeviation) {
+            hasAnnouncedRecalcForCurrentDeviation = true;
+            if (typeof speakInstruction === "function") {
+                speakInstruction("Nieuwe route berekend.");
+            }
         }
 
     } catch (err) {
@@ -830,7 +857,11 @@ window.onRouteDeviationConfirmed = function({ lat, lon }) {
 window.onRouteRecoveryConfirmed = function() {
     // Le cycliste est revenu tout seul sur le trajet actif : on invalide
     // tout recalcul en vol (voir la vérification myToken !== deviationToken
-    // dans recalculateRouteFromDeviation).
+    // dans recalculateRouteFromDeviation) et on autorise une NOUVELLE annonce
+    // "Nouvel itinéraire calculé" si un futur épisode de déviation distinct
+    // se produit.
     deviationToken++;
+    hasAnnouncedRecalcForCurrentDeviation = false;
 };
+
 
