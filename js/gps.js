@@ -172,8 +172,8 @@ function translateInstruction(text) {
     return text
         .replace(/turn left/gi, "sla linksaf")
         .replace(/turn right/gi, "sla rechtsaf")
-        .replace(/turn slight left/gi, "draai iets naar links")
-        .replace(/turn slight right/gi, "draai iets naar rechts")
+        .replace(/turn slightly left/gi, "draai iets naar links")
+        .replace(/turn slightly right/gi, "draai iets naar rechts")
         .replace(/sharp right/gi, "scherpe bocht naar rechts")
         .replace(/sharp lelft/gi, "scherpe bocht naar links")
         .replace(/keep left/gi, "houd links aan")
