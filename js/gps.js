@@ -50,6 +50,14 @@ resetVoiceNavigationState();
 // depuis startNavigation() à chaque (re)démarrage d'une navigation, en plus
 // de resetVoiceNavigationState(). Sans ça, wasOffRoute/hasAnnouncedArrival
 // peuvent rester bloqués d'une session à l'autre.
+//
+// NE PAS appeler cette fonction après un simple recalcul automatique en
+// pleine navigation (déviation) : elle remettrait wasOffRoute/offRouteHasWarned
+// à zéro comme si le cycliste était réellement revenu sur le trajet, ce qui
+// permettait à UNE SEULE déviation physique d'être redétectée comme "nouvelle"
+// quelques secondes plus tard et de redéclencher un recalcul + une annonce
+// vocale plusieurs fois de suite. Utiliser resetAfterAutoRecalculation() à la
+// place dans ce cas précis (voir plus bas).
 function resetOffRouteAndArrivalState() {
     wasOffRoute = false;
     offRouteHasWarned = false;
@@ -62,6 +70,19 @@ function resetOffRouteAndArrivalState() {
     window.__routeJustRecalculatedUntil = 0;
 }
 window.resetOffRouteAndArrivalState = resetOffRouteAndArrivalState;
+
+// Reset LÉGER à appeler par route.js après un recalcul automatique réussi
+// PENDANT la navigation (suite à une déviation). Ne touche volontairement
+// PAS à wasOffRoute / offRouteHasWarned / lastRerouteAttemptTime : on reste
+// dans le MÊME épisode de déviation tant qu'un retour réel sur le trajet
+// n'a pas été confirmé par checkOffRoute (voir onRouteRecoveryConfirmed).
+// Se contente de rouvrir une période de grâce le temps que le GPS se
+// stabilise sur le nouveau tracé.
+function resetAfterAutoRecalculation() {
+    hasAnnouncedArrival = false;
+    window.__routeJustRecalculatedUntil = Date.now() + 8000;
+}
+window.resetAfterAutoRecalculation = resetAfterAutoRecalculation;
 
 // ==============================
 // GPS SETTINGS (appliquées depuis l'UI)
@@ -138,8 +159,8 @@ function getBestFrenchVoice() {
     const voices = speechSynthesis.getVoices();
     if (!voices || voices.length === 0) return null;
 
-    return voices.find(v => v.lang.startsWith("nl") && v.localService === true) ||
-           voices.find(v => v.lang.startsWith("nl")) ||
+    return voices.find(v => v.lang.startsWith("fr") && v.localService === true) ||
+           voices.find(v => v.lang.startsWith("fr")) ||
            null;
 }
 
@@ -149,17 +170,29 @@ function getBestFrenchVoice() {
 function translateInstruction(text) {
     if (!text) return "";
     return text
-        .replace(/turn left/gi, "sla linksaf")
-        .replace(/turn right/gi, "sla rechtsaf")
-        .replace(/sharp right/gi, "scherpe bocht naar rechts")
-        .replace(/sharp left/gi, "scherpe bocht naar links")
-        .replace(/make a slight left/gi, "draai iets naar links")
-        .replace(/make a slight right/gi, "draai iets naar rechts")
-        .replace(/keep left/gi, "houd links aan")
-        .replace(/keep right/gi, "houd rechts aan")
-        .replace(/head/gi, "neem de richting")
-        .replace(/onto/gi, "op")
-        .replace(/continue/gi, "ga verder");
+        .replace(/turn left/gi, "tournez à gauche")
+        .replace(/turn right/gi, "tournez à droite")
+        .replace(/make a slight left/gi, "serrez légèrement à gauche")
+        .replace(/make a slight right/gi, "serrez légèrement à droite")
+        .replace(/keep left/gi, "restez sur la gauche")
+        .replace(/keep right/gi, "restez sur la droite")
+        // Points cardinaux : les instructions renvoyées par le moteur de
+        // routage contiennent souvent des directions du type "Head northwest",
+        // "Head north-east on...". Les formes composées DOIVENT être traduites
+        // AVANT les formes simples (nord/sud/est/ouest), sinon "northwest"
+        // serait déjà partiellement remplacé par "north" -> "nord" en laissant
+        // "west" tel quel.
+        .replace(/north-?east/gi, "nord-est")
+        .replace(/north-?west/gi, "nord-ouest")
+        .replace(/south-?east/gi, "sud-est")
+        .replace(/south-?west/gi, "sud-ouest")
+        .replace(/\bnorth\b/gi, "nord")
+        .replace(/\bsouth\b/gi, "sud")
+        .replace(/\beast\b/gi, "est")
+        .replace(/\bwest\b/gi, "ouest")
+        .replace(/head/gi, "prenez la direction")
+        .replace(/onto/gi, "sur")
+        .replace(/continue/gi, "continuez");
 }
 
 // TTS queue processor: ensures sequential playback and returns a Promise
@@ -210,7 +243,7 @@ function processTtsQueue() {
         const utterance = new SpeechSynthesisUtterance(cleanedText);
         const voice = getBestFrenchVoice();
         if (voice) utterance.voice = voice;
-        //utterance.lang = "fr-FR";
+        utterance.lang = "fr-FR";
         utterance.rate = 0.95;
 
         utterance.onend = finish;
@@ -431,7 +464,7 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
         offRouteHighCount = 0;
 
         if (!offRouteHasWarned && (now - lastOffRouteSpokenTime > offRouteCooldown)) {
-            speakInstruction("U wijkt af van de route. Vergeet niet om te keren of weer op de route terug te keren.");
+            speakInstruction("Vous vous éloignez du parcours. Pensez à faire demi-tour ou à rejoindre l'itinéraire.");
             lastOffRouteSpokenTime = now;
             offRouteHasWarned = true;
         }
@@ -456,7 +489,9 @@ function checkOffRoute(lat, lon, gpsAccuracy = 10) {
 
         // Hook optionnel : informe route.js qu'un retour naturel sur le
         // trajet actif vient d'avoir lieu, pour qu'il puisse annuler un
-        // recalcul automatique encore en vol (voir onRouteDeviationConfirmed).
+        // recalcul automatique encore en vol (voir onRouteDeviationConfirmed)
+        // et autoriser une nouvelle annonce "Nouvel itinéraire calculé" lors
+        // d'un PROCHAIN épisode de déviation distinct.
         // Ne fait rien si le hook n'est pas implémenté.
         if (typeof window.onRouteRecoveryConfirmed === "function") {
             try {
@@ -570,19 +605,19 @@ function checkVoiceNavigation(lat, lon, gpsAccuracy = 10) {
             msg = step.instruction;
 
             if (step.windInfo) {
-                if (step.windInfo.type === "voorkant") {
-                    msg += `. Tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
-                } else if (step.windInfo.type === "rug") {
-                    msg += ". Rugwind.";
-                } else if (step.windInfo.type === "kant") {
-                    msg += ". Let op, zijwind.";
+                if (step.windInfo.type === "face") {
+                    msg += `. Vent de face à ${step.windInfo.speed} kilomètres heure.`;
+                } else if (step.windInfo.type === "dos") {
+                    msg += ". Vent dans le dos.";
+                } else if (step.windInfo.type === "cote") {
+                    msg += ". Attention, vent de côté.";
                 }
             }
         } else if (step.isWindOnly && step.windInfo && step.windInfo.type === "face") {
             // Pseudo-étape insérée par route.js : pas de changement de
             // direction ici, uniquement un signalement de vent de face
             // détecté en cours de route (virage progressif, ligne droite...).
-            msg = `Let op, tegenwind uit ${step.windInfo.speed} kilometer per uur.`;
+            msg = `Attention, vent de face à ${step.windInfo.speed} kilomètres heure.`;
         }
 
         if (msg) {
@@ -628,11 +663,11 @@ function checkArrivalSimple(lat, lon, gpsAccuracy = 10) {
     if (typeof destLat !== "number" || typeof destLon !== "number") return;
 
     const distToDestination = getDistanceInMeters(lat, lon, destLat, destLon);
-    const arrivalRadius = Math.max(20, Math.min(35, gpsAccuracy + 8));
+    const arrivalRadius = Math.max(15, Math.min(30, gpsAccuracy + 8));
 
     if (distToDestination <= arrivalRadius) {
         hasAnnouncedArrival = true;
-        speakInstruction("bestemming bereikt.");
+        speakInstruction("Destination atteinte.");
     }
 }
 
@@ -738,7 +773,7 @@ function initGeolocation() {
         err => {
             console.warn("[GPS] Erreur de géolocalisation :", err);
             if (window.isNavigating && err.code === err.PERMISSION_DENIED) {
-                speakInstruction("Let op: de geolocatie is geweigerd. De navigatie kan niet worden voortgezet.");
+                speakInstruction("Attention, la géolocalisation a été refusée. La navigation ne peut plus continuer.");
             }
         },
         {
@@ -758,7 +793,7 @@ function initGeolocation() {
         const staleFor = Date.now() - lastGpsFixTime;
         if (staleFor > 25000 && !hasWarnedGpsStale) {
             hasWarnedGpsStale = true;
-            speakInstruction("Het GPS-signaal is al een tijdje weg. Controleer je positie.");
+            speakInstruction("Signal GPS perdu depuis un moment. Vérifiez votre position.");
         }
     }, 10000);
 }
@@ -772,3 +807,5 @@ window.onLocationUpdate = onLocationUpdate;
 window.resetVoiceNavigationState = resetVoiceNavigationState;
 window.speakInstruction = speakInstruction;
 window.getDistanceInMeters = getDistanceInMeters; // réutilisé par route.js pour la détection vent en cours d'étape
+
+
